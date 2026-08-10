@@ -20,7 +20,7 @@ pip install -q \
     "newton==1.0.0" \
     "mujoco==3.5.0" \
     "mujoco-warp==3.5.0.2" \
-    "warp-lang>=1.12.0" \
+    "warp-lang>=1.12.0,<1.17" \
     "pyglet>=2.1.6,<3" \
     "usd-core>=25.5" \
     "trimesh>=4.6.8" \

@@ -18,29 +18,50 @@ import sys
 DATA_DIRS = ["assets", "motions", "models", "logs"]
 
 
-def find_source(search_root):
-    """Return the directory that holds assets/ and motions/, or None."""
+def is_data_pack(path):
+    return (os.path.isdir(os.path.join(path, "assets"))
+            and os.path.isdir(os.path.join(path, "motions")))
+
+
+def find_source(search_root, max_depth=6):
+    """Return the directory that holds assets/ and motions/, or None.
+
+    Kaggle nests datasets differently depending on how they were created --
+    /kaggle/input/<slug>/, /kaggle/input/datasets/<user>/<slug>/, and an extra
+    MimicKit_Data/ level are all possible -- so search breadth-first instead of
+    assuming a fixed layout.
+    """
     if not os.path.isdir(search_root):
         return None
 
-    # Look at the dataset roots and one level below (the pack is often nested
-    # inside a MimicKit_Data/ folder).
-    candidates = [search_root]
-    for entry in sorted(os.listdir(search_root)):
-        path = os.path.join(search_root, entry)
-        if not os.path.isdir(path):
-            continue
-        candidates.append(path)
-        for sub in sorted(os.listdir(path)):
-            sub_path = os.path.join(path, sub)
-            if os.path.isdir(sub_path):
-                candidates.append(sub_path)
+    frontier = [(search_root, 0)]
+    visited = set()
+    while frontier:
+        path, depth = frontier.pop(0)
 
-    for cand in candidates:
-        has_assets = os.path.isdir(os.path.join(cand, "assets"))
-        has_motions = os.path.isdir(os.path.join(cand, "motions"))
-        if has_assets and has_motions:
-            return cand
+        # Symlinked directories are followed, so guard against cycles.
+        real = os.path.realpath(path)
+        if real in visited:
+            continue
+        visited.add(real)
+
+        if is_data_pack(path):
+            return path
+        if depth >= max_depth:
+            continue
+
+        # Never descend into the pack's own payload directories.
+        if os.path.basename(path) in DATA_DIRS:
+            continue
+
+        try:
+            entries = sorted(os.listdir(path))
+        except OSError:
+            continue
+        for entry in entries:
+            sub_path = os.path.join(path, entry)
+            if os.path.isdir(sub_path):
+                frontier.append((sub_path, depth + 1))
     return None
 
 

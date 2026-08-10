@@ -17,7 +17,8 @@ Instructions for each method are available here:
 - [ADD - Adversarial Differential Discriminator](docs/README_ADD.md)
 - [SMP - Score-Matching Motion Priors](docs/README_SMP.md)
 
-To run this framework on a Kaggle notebook, see the [Kaggle guide](docs/README_Kaggle.md).
+To run this framework on a Kaggle notebook, see the [Kaggle guide](docs/README_Kaggle.md)
+([hướng dẫn tiếng Việt](docs/HUONG_DAN_KAGGLE.md)).
 
 ---
 

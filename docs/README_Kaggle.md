@@ -4,6 +4,8 @@ Everything needed to go from `git clone` to `!python mimickit/run.py` inside a K
 The ready-made notebook is [`kaggle/mimickit_kaggle.ipynb`](../kaggle/mimickit_kaggle.ipynb) —
 upload it to Kaggle and run the cells top to bottom.
 
+Step-by-step Vietnamese walkthrough: [HUONG_DAN_KAGGLE.md](HUONG_DAN_KAGGLE.md).
+
 ## Which engine
 
 **Newton**, not Isaac Gym. Isaac Gym ships as a manual download behind an NVIDIA login and only
@@ -37,6 +39,10 @@ kaggle datasets create -p /tmp/mimickit_data --dir-mode zip
 ```
 
 Or just use the Kaggle web UI: *Datasets → New Dataset → upload a zip of `data/MimicKit_Data/`*.
+
+Downloading the pack directly inside the notebook does not work: the SharePoint share link returns
+`401 Access denied` to `wget`/`curl` even with `&download=1`, since it needs a browser session
+cookie.
 
 Then in the notebook, *Add Input → Datasets →* your `mimickit-data`.
 
