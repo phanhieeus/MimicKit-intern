@@ -122,4 +122,5 @@ Kaggle — there is no display to attach to.
 | `torch.cuda.is_available() == False` | A pip install replaced torch with a CPU wheel. Restart the session; do not `pip install -r requirements.txt`. |
 | CUDA OOM during training | Lower `--num_envs`. |
 | `mujoco_warp` import error from `SolverMuJoCo` | `pip install mujoco==3.5.0 mujoco-warp==3.5.0.2`. |
+| `WarpCodegenKeyError: Referencing undefined symbol: J_kj` | warp-lang 1.16.0 cannot compile mujoco-warp 3.5.0.2's tiled solver kernel. Install `warp-lang==1.15.0` and restart the session. |
 | Hangs at startup, no output | Warp is JIT-compiling its kernels on first run; this takes a few minutes and is cached afterwards. |

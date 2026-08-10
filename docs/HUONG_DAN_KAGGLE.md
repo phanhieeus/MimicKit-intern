@@ -215,5 +215,6 @@ mang tính tham khảo, không phải điểm số thật của chúng.
 | CUDA out of memory | Giảm `--num_envs` (thử 512, rồi 256) |
 | Lỗi import `mujoco_warp` | `pip install mujoco==3.5.0 mujoco-warp==3.5.0.2` |
 | Chạy mãi không thấy output | Warp đang biên dịch JIT lần đầu, đợi vài phút |
+| `WarpCodegenKeyError: Referencing undefined symbol: J_kj` | warp-lang bị lên 1.16.0. Phải dùng đúng 1.15.0: `pip install "warp-lang==1.15.0"` rồi **Restart session** |
 | Mất hết model sau khi đóng notebook | `--out_dir` không nằm trong `/kaggle/working` |
 | Job bị kill giữa chừng | Vượt giới hạn thời gian session — đặt `--max_samples` nhỏ hơn |
