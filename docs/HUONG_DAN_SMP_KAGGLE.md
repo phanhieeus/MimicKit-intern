@@ -265,8 +265,8 @@ for name in ["reference_data.mp4", "policy.mp4", "reference_sim.mp4"]:
 **Đọc kết quả thế nào:** policy mimic được khi `policy.mp4` có cùng *cấu trúc* động tác với
 `reference_data.mp4` — xoay người, tung chân, tiếp đất — chứ không cần trùng khít từng frame (SMP
 không tracking theo phase, nó chỉ ép phân phối chuyển động giống prior). Các dấu hiệu chưa được:
-đứng yên rung rung, ngã ngay giây đầu, hoặc lặp 1 tư thế trung bình. Đối chiếu thêm `Test_Return`
-trên WandB — return phẳng ở mức thấp là chưa học được.
+đứng yên rung rung, ngã ngay giây đầu, hoặc lặp 1 tư thế trung bình. Đối chiếu thêm các metric ở
+mục [Đọc metric](#đọc-metric-trainreturn--0-là-bình-thường) bên dưới.
 
 ---
 
@@ -315,6 +315,38 @@ Nếu có train prior ở Cell 5, upload luôn sample của nó để soi prior:
 
 ---
 
+## Đọc metric: `Train_Return = 0` là bình thường
+
+Với SMP single-clip, **`Train_Return` và `Test_Return` luôn bằng 0** — không phải bạn cấu hình sai.
+Lý do nằm ở chỗ reward được cộng vào lúc nào:
+
+- `AMPEnv._update_reward()` (mà `SMPEnv` kế thừa) là hàm rỗng — env **không bao giờ** ghi vào
+  `_reward_buf`, nên reward trả về mỗi step là 0.
+- Return tracker (`Train_Return` / `Test_Return`) cộng dồn đúng cái reward-mỗi-step đó → 0.
+- SMP reward được tính **sau** khi rollout xong, trong `SMPAgent._compute_rewards()`: nó lấy
+  `disc_obs` trong experience buffer, chấm bằng diffusion prior, rồi *ghi đè* trường `reward` của
+  buffer bằng `task_reward_weight * task_r + smp_reward_weight * smp_r`. PPO học từ giá trị này,
+  nhưng return tracker thì không thấy.
+- Với `smp_humanoid_agent.yaml`, `task_reward_weight: 0.0` nên phần task reward cũng bằng 0 —
+  không có task nào cả, chỉ có "giống clip tới đâu".
+
+Vậy nhìn vào đâu để biết đang học được hay không:
+
+| Metric | Kỳ vọng | Ghi chú |
+| --- | --- | --- |
+| `Smp_Reward_Mean` | **tăng** | chính là reward PPO đang tối ưu: `exp(-SDS_norm * sds_loss_scale)` |
+| `Sds_Loss_Mean` | **giảm** | SDS loss thô; càng nhỏ nghĩa là motion càng nằm trong phân phối của prior |
+| `Train_Episode_Length` / `Test_Episode_Length` | **tăng**, tiến tới 300 step (10 s) | tín hiệu trực quan nhất: dài ra = hết ngã sớm. Hai key này bị đánh dấu `quiet` nên **không in ra console**, chỉ có trong `log.txt` và trên WandB |
+| `Critic_Loss`, `Clip_Frac` | ổn định, không nổ | `Clip_Frac` ~0.1 là lành mạnh |
+
+Lưu ý về thang đo `Smp_Reward_Mean`: `DiffNormalizer` chia SDS loss cho **trung bình động của chính
+nó** (cumulative, không reset). Nên reward là đại lượng *tương đối* — nó đo "hiện tại tốt hơn trung
+bình lịch sử bao nhiêu", không phải thang tuyệt đối 0→1. Đừng chờ nó chạy tới 1.0; cứ có xu hướng
+tăng đều là được. Ở iteration 20 (~1.3M samples) mọi thứ còn quá sớm để kết luận — spinkick thường
+cần hàng chục triệu samples mới thấy hình hài.
+
+---
+
 ## Tinh chỉnh khi kết quả chưa ổn
 
 Sửa trong [`data/agents/smp_humanoid_agent.yaml`](../data/agents/smp_humanoid_agent.yaml). Thứ tự ưu
@@ -322,7 +354,7 @@ tiên theo README_SMP: `smp_reward_weight` > `sds_loss_scale` >= `diffusion_step
 
 | Triệu chứng | Thử |
 | --- | --- |
-| Nhân vật ngã liên tục, return thấp | train thêm samples; giảm `action_std` (0.05 → 0.03); tăng `num_envs` nếu còn VRAM |
+| Nhân vật ngã liên tục (`Train_Episode_Length` thấp, không tăng) | train thêm samples; giảm `action_std` (0.05 → 0.03); tăng `num_envs` nếu còn VRAM |
 | Chuyển động mượt nhưng "nhạt", không ra spinkick | tăng `sds_loss_scale` (6 → 8–10) |
 | Giật, run rẩy | giảm `sds_loss_scale`; thêm `action_reg_weight` nhỏ (vd 0.01) |
 | Học chậm | tăng `steps_per_iter` (32 → 64) để mỗi batch nhiều data hơn |
@@ -338,6 +370,7 @@ lại prior**.
 
 | Lỗi | Nguyên nhân / cách xử lý |
 | --- | --- |
+| `Train_Return` / `Test_Return` luôn = 0 | **không phải lỗi** — xem mục [Đọc metric](#đọc-metric-trainreturn--0-là-bình-thường) |
 | `ModuleNotFoundError: isaacgym` / `isaaclab` | thiếu `--engine_config data/engines/newton_engine.yaml` |
 | `SMP prior env mismatch for <key>` | prior train với env config khác env đang dùng → train lại prior, hoặc trỏ `smp_prior_cfg` về đúng prior |
 | `FileNotFoundError: data/models/smp_priors/...pt` | data pack chưa attach/link → chạy lại `kaggle/prepare_data.py`, hoặc train prior ở Cell 5 |
