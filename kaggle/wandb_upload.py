@@ -19,6 +19,12 @@ WandB artifact so nothing is lost when the Kaggle session ends.
 Pass `--dir <path>` to upload every file under a directory instead of listing
 them, and `--run_id <id>` to attach the media to an existing run (the training
 run) rather than creating a new one -- copy the id from that run's URL.
+
+The reverse direction pulls an artifact back down, which is how a checkpoint
+gets from one Kaggle session into the next:
+
+    python kaggle/wandb_upload.py --download smp_spinkick_files:latest \
+        --dest /kaggle/working/prev --project mimickit-smp
 """
 
 import argparse
@@ -54,6 +60,26 @@ def collect_files(files, dirs, max_bytes):
     return kept
 
 
+def download_artifact(args):
+    """Fetch an artifact into --dest. Uses the public API, so no run is created."""
+    import wandb
+
+    ref = args.download
+    if "/" not in ref:
+        ref = "{}/{}".format(args.project, ref)
+
+    api = wandb.Api()
+    artifact = api.artifact(ref)
+    path = artifact.download(root=args.dest)
+
+    print("Downloaded {} -> {}".format(ref, path))
+    for root, _, names in os.walk(path):
+        for name in sorted(names):
+            full = os.path.join(root, name)
+            print("  {} ({:.1f} MB)".format(full, os.path.getsize(full) / 1e6))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -69,14 +95,21 @@ def main():
     parser.add_argument("--fps", type=int, default=30, help="fps declared for logged videos.")
     parser.add_argument("--max_file_mb", type=float, default=500.0,
                         help="Skip files larger than this. 0 = no limit.")
+    parser.add_argument("--download", default=None, metavar="ARTIFACT",
+                        help="Download an artifact (e.g. 'smp_spinkick_files:latest') instead of uploading.")
+    parser.add_argument("--dest", default="wandb_download",
+                        help="Where --download puts the files.")
     args = parser.parse_args()
-
-    if not args.files and not args.dirs:
-        parser.error("nothing to upload: pass --files and/or --dir")
 
     if "WANDB_API_KEY" not in os.environ:
         print("ERROR: WANDB_API_KEY is not set.")
         return 1
+
+    if args.download:
+        return download_artifact(args)
+
+    if not args.files and not args.dirs:
+        parser.error("nothing to upload: pass --files and/or --dir")
 
     paths = collect_files(args.files, args.dirs, args.max_file_mb * 1e6)
     if not paths:

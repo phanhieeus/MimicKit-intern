@@ -242,11 +242,41 @@ class BaseAgent(torch.nn.Module):
             self._update_normalizers()
 
         info = {**train_info, **data_info}
-        
+
         info["mean_return"] = self._train_return_tracker.get_mean_return().item()
         info["mean_ep_len"] = self._train_return_tracker.get_mean_ep_len().item()
         info["num_eps"] = self._train_return_tracker.get_episodes()
-        
+        info.update(self._calc_termination_info())
+
+        return info
+
+    def _calc_termination_info(self):
+        """How episodes ended over the last rollout.
+
+        For imitation tasks the return can be uninformative (SMP, for instance,
+        leaves the env reward at zero and injects its own reward into the buffer
+        afterwards), so the share of episodes that ended in a fall is often the
+        clearest progress signal: it should fall towards zero while
+        `ep_len_frac` climbs towards 1.
+        """
+        done = self._exp_buffer.get_data("done")
+
+        num_fail = torch.sum(done == base_env.DoneFlags.FAIL.value)
+        num_succ = torch.sum(done == base_env.DoneFlags.SUCC.value)
+        num_time = torch.sum(done == base_env.DoneFlags.TIME.value)
+        num_term = num_fail + num_succ + num_time
+
+        denom = torch.clamp_min(num_term.type(torch.float), 1.0)
+        max_ep_len = self._env.get_episode_length_steps()
+
+        info = {
+            "fail_frac": (num_fail / denom).item(),
+            "timeout_frac": (num_time / denom).item(),
+            "terminations": num_term.item(),
+        }
+        if (max_ep_len > 0):
+            mean_ep_len = self._train_return_tracker.get_mean_ep_len().item()
+            info["ep_len_frac"] = mean_ep_len / max_ep_len
         return info
 
     def _init_iter(self):
@@ -364,7 +394,9 @@ class BaseAgent(torch.nn.Module):
         test_eps = mp_util.reduce_sum(test_eps)
 
         self._logger.log("Test_Return", test_return, collection="0_Main")
-        self._logger.log("Test_Episode_Length", test_ep_len, collection="0_Main", quiet=True)
+        # Printed, not quiet: for imitation agents this is the metric that moves
+        # while the return sits at zero.
+        self._logger.log("Test_Episode_Length", test_ep_len, collection="0_Main")
         self._logger.log("Test_Episodes", test_eps, collection="1_Info", quiet=True)
 
         train_return = train_info.pop("mean_return")
@@ -373,7 +405,7 @@ class BaseAgent(torch.nn.Module):
         train_eps = mp_util.reduce_sum(train_eps)
 
         self._logger.log("Train_Return", train_return, collection="0_Main")
-        self._logger.log("Train_Episode_Length", train_ep_len, collection="0_Main", quiet=True)
+        self._logger.log("Train_Episode_Length", train_ep_len, collection="0_Main")
         self._logger.log("Train_Episodes", train_eps, collection="1_Info", quiet=True)
 
         for k, v in train_info.items():

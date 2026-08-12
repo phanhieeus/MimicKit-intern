@@ -176,7 +176,16 @@ class SMPAgent(ppo_agent.PPOAgent):
 
         info = {
             "smp_reward_mean": smp_reward_mean,
-            "smp_reward_std": smp_reward_std
+            "smp_reward_std": smp_reward_std,
+            # The reward PPO actually optimises. Identical to smp_reward_mean
+            # when smp_reward_weight is 1 and there is no task reward, but that
+            # stops being true the moment either weight is changed -- and the
+            # return trackers never see this value, since the env reward is 0.
+            "reward_mean": torch.mean(r),
+            # Best and worst samples in the batch. A mean that creeps up while
+            # the max stays pinned means a few good frames, not a good policy.
+            "smp_reward_max": torch.max(smp_r),
+            "smp_reward_p90": torch.quantile(smp_r.type(torch.float32), 0.9),
         }
         info.update(sds_info)
 
@@ -187,6 +196,7 @@ class SMPAgent(ppo_agent.PPOAgent):
 
         smp_r_list = []
         mean_sds_loss_list = []
+        mean_sds_loss_norm_list = []
 
         with torch.no_grad():
             for i in range(0, n, self._smp_eval_batch_size):
@@ -206,14 +216,22 @@ class SMPAgent(ppo_agent.PPOAgent):
 
                 mean_sds_loss = torch.mean(sds_losses, dim=-1)
                 mean_sds_loss_list.append(mean_sds_loss)
+                mean_sds_loss_norm_list.append(mean_sds_loss_norm)
                 smp_r_list.append(smp_r)
 
             smp_r = torch.cat(smp_r_list, dim=0)
             mean_sds_loss = torch.cat(mean_sds_loss_list, dim=0)
+            mean_sds_loss_norm = torch.cat(mean_sds_loss_norm_list, dim=0)
 
             sds_info = dict()
             sds_info["sds_loss_mean"] = torch.mean(mean_sds_loss)
             sds_info["sds_loss_std"] = torch.std(mean_sds_loss)
+            # The value that actually goes into exp(-x * sds_loss_scale), and the
+            # running scale it was divided by. The reward saturates while the raw
+            # loss keeps dropping because this denominator drops along with it --
+            # logging both makes that visible instead of looking like a plateau.
+            sds_info["sds_loss_norm_mean"] = torch.mean(mean_sds_loss_norm)
+            sds_info["sds_norm_scale"] = torch.mean(self._sds_normalizer.get_abs_mean())
         
         return smp_r, sds_info
 

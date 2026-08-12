@@ -61,6 +61,10 @@ class BaseEnv(abc.ABC):
 
     def get_visualize(self):
         return self._visualize
+
+    def get_episode_length_steps(self):
+        """Steps an episode runs before timing out. 0 when the env has no limit."""
+        return 0
     
     def get_env_time(self, env_ids=None):
         return 0.0

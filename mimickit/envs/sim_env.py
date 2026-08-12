@@ -90,7 +90,10 @@ class SimEnv(base_env.BaseEnv):
     
     def get_num_envs(self):
         return self._engine.get_num_envs()
-    
+
+    def get_episode_length_steps(self):
+        return int(round(self._episode_length / self._engine.get_timestep()))
+
     def get_env_time(self, env_ids=None):
         if (env_ids is None):
             env_time = self._time_buf

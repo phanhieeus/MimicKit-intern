@@ -173,23 +173,26 @@ class Logger:
         return template
 
     def _mp_aggregate(self):
-        if (self._data_buffer is None):
-            n = len(self.log_headers)
-            self._data_buffer = torch.zeros(n, dtype=torch.float64, device=mp_util.get_device())
-        
-        for i, key in enumerate(self.log_headers):
-            entry = self.log_current_row[key]
-            val = entry.val
-            self._data_buffer[i] = val
+        # Non-numeric entries (videos, in particular) cannot go through the
+        # all-reduce. Every process records its own, and only the root's is
+        # written out, so they are simply left alone here.
+        num_keys = [key for key in self.log_headers
+                    if isinstance(self.log_current_row[key].val, numbers.Number)]
+
+        if (self._data_buffer is None or self._data_buffer.shape[0] != len(num_keys)):
+            self._data_buffer = torch.zeros(len(num_keys), dtype=torch.float64, device=mp_util.get_device())
+
+        for i, key in enumerate(num_keys):
+            self._data_buffer[i] = self.log_current_row[key].val
 
         mp_util.reduce_inplace_mean(self._data_buffer)
-        
-        for i, key in enumerate(self.log_headers):
+
+        for i, key in enumerate(num_keys):
             entry = self.log_current_row[key]
             val = self._data_buffer[i].item()
             if (isinstance(entry.val, int)):
                 val = int(val)
             entry.val = val
-            
+
         self._need_update = False
         return

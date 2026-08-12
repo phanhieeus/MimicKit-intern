@@ -202,10 +202,13 @@ spinkick là clip khó; cứ nối 2–3 session.
     --out_dir /kaggle/working/output/smp_spinkick --devices cuda:0 cuda:1
 ```
 
-`--video true` cho Newton dựng thêm 1 viewer GL headless qua Xvfb, quay lại các đợt test định kỳ và
-`wandb_logger` upload thẳng mp4 (`Sim_Recording`) lên run. Nhược điểm: container GPU của Kaggle
-không phải lúc nào cũng có GL/EGL context dùng được, và nó làm chậm train. Nếu fail thì quay lại
-`--video false` và dùng đường mp4 offline ở Cell 8 — đường đó dựng bằng MuJoCo/EGL, ổn định hơn nhiều.
+`--video true` cho Newton dựng thêm 1 viewer GL headless qua Xvfb, quay lại các đợt test định kỳ
+(mỗi `iters_per_output` = 100 iter) và `wandb_logger` upload thẳng mp4 (`Sim_Recording`) lên run —
+tức là bạn xem được tiến triển **trong lúc train** chứ không phải đợi tới cuối.
+
+Đánh đổi: container GPU của Kaggle không phải lúc nào cũng có GL context dùng được, và nó làm chậm
+train. Nếu fail thì quay lại `--video false` rồi dùng `kaggle/make_videos.py` ở Cell 8 — đường đó
+dựng bằng MuJoCo/EGL, ổn định hơn hẳn.
 
 ---
 
@@ -219,34 +222,39 @@ Ba video để trả lời câu hỏi "nó có mimic được không":
 
 ```python
 OUT = "/kaggle/working/output/smp_spinkick"
+RUN_ID = "mbi5axg4"      # id của run training, lấy từ URL WandB. Bỏ đi thì tạo run mới.
 
-# 8a. Roll out policy, ghi state ra clip format (.pkl) — cả policy lẫn reference character.
-!python tools/play_policy_to_mp4.py \
-    --env_config    data/envs/smp_humanoid_env.yaml \
-    --agent_config  data/agents/smp_humanoid_agent.yaml \
-    --engine_config data/engines/newton_engine.yaml \
-    --model_file    {OUT}/model.pt \
-    --out_dir       {OUT}/playback \
+!python kaggle/make_videos.py \
+    --out_dir      {OUT} \
+    --env_config   data/envs/smp_humanoid_env.yaml \
+    --agent_config data/agents/smp_humanoid_agent.yaml \
+    --char_file    data/assets/humanoid/humanoid.xml \
+    --motion_file  data/motions/humanoid/humanoid_spinkick.pkl \
+    --wandb_project mimickit-smp \
+    --wandb_run_id {RUN_ID} \
     --steps 300
-
-# 8b. Render 3 clip thành mp4 bằng MuJoCo offscreen (EGL) — không cần Newton, không cần GL viewer.
-XML = "data/assets/humanoid/humanoid.xml"
-
-!python tools/render_robot_video.py --motion {OUT}/playback/policy.pkl \
-    --robot-xml {XML} --output {OUT}/policy.mp4 --fps 30
-
-!python tools/render_robot_video.py --motion {OUT}/playback/reference.pkl \
-    --robot-xml {XML} --output {OUT}/reference_sim.mp4 --fps 30
-
-!python tools/render_robot_video.py --motion data/motions/humanoid/humanoid_spinkick.pkl \
-    --robot-xml {XML} --output {OUT}/reference_data.mp4 --fps 30
-
-!ls -lh {OUT}/*.mp4
 ```
 
-`--steps 300` = 10 giây ở 30 Hz = đúng 1 episode (`episode_length: 10.0` trong env config). Script in
-ra `episodes terminated during the recording` — khác 0 nghĩa là humanoid đã ngã hoặc chạm đất bằng
-body không cho phép, và clip có chứa cả đoạn reset.
+Script làm tuần tự: render clip gốc → roll out policy ra `.pkl` → render policy + reference → upload
+lên WandB (tab **Media** của run, key `video/...`). **Mỗi bước đều được kiểm tra, sai là dừng ngay
+kèm lỗi** — khác với chuỗi 3 lệnh rời trước đây, nơi rollout chết thì render không có input và bước
+upload chỉ in một dòng `[WARN] not a file` rồi vẫn báo thành công (đúng cái đã xảy ra ở lần chạy
+trước: run `smp_spinkick_media` lên WandB mà không có mp4 nào).
+
+Vài flag đáng nhớ:
+
+- `--wandb_run_id <id>`: video nằm **chung run với training**, cạnh các đường cong. Không có flag này
+  thì tạo run riêng tên `<out_dir>_videos`.
+- `--no_upload`: chỉ tạo file, không cần `WANDB_API_KEY`.
+- `--int_models`: render **mọi checkpoint** trong `int_models/` → xem được cả quá trình tiến hoá,
+  checkpoint sớm ngã sấp mặt, checkpoint muộn đứng được. Tốn thời gian (mỗi checkpoint 1 rollout).
+- `--gl osmesa`: dùng khi EGL fail.
+- `--steps 300` = 10 giây ở 30 Hz = trọn 1 episode (`episode_length: 10.0`). Rollout in ra
+  `episodes terminated during the recording` — khác 0 nghĩa là humanoid đã ngã giữa chừng và clip có
+  chứa cả đoạn reset.
+
+Nếu vẫn muốn chạy tay từng bước để soi lỗi: `tools/play_policy_to_mp4.py` rồi
+`tools/render_robot_video.py` — `make_videos.py` chỉ gọi đúng hai script đó.
 
 Xem ngay trong notebook:
 
@@ -258,7 +266,7 @@ def show(path, w=480):
     b64 = base64.b64encode(open(path, "rb").read()).decode()
     display(HTML(f'<p>{path}</p><video width={w} controls src="data:video/mp4;base64,{b64}">'))
 
-for name in ["reference_data.mp4", "policy.mp4", "reference_sim.mp4"]:
+for name in ["reference_data.mp4", "policy_final.mp4", "reference_sim_final.mp4"]:
     show(f"{OUT}/{name}")
 ```
 
@@ -270,27 +278,21 @@ mục [Đọc metric](#đọc-metric-trainreturn--0-là-bình-thường) bên d�
 
 ---
 
-## Cell 9 — Đẩy mp4 + log lên WandB
+## Cell 9 — Đẩy checkpoint + log lên WandB
+
+Video đã lên ở Cell 8 rồi. Cell này để giữ những thứ còn lại — quan trọng nhất là `model.pt`, vì
+đó là thứ bạn cần để **train tiếp ở session sau**:
 
 ```python
 !python kaggle/wandb_upload.py \
     --project mimickit-smp \
-    --run_name smp_spinkick_media \
-    --files {OUT}/policy.mp4 {OUT}/reference_sim.mp4 {OUT}/reference_data.mp4 \
-            {OUT}/log.txt {OUT}/model.pt \
-            {OUT}/agent_config.yaml {OUT}/env_config.yaml
+    --run_name smp_spinkick_files \
+    --files {OUT}/model.pt {OUT}/log.txt \
+            {OUT}/agent_config.yaml {OUT}/env_config.yaml {OUT}/engine_config.yaml
 ```
 
-Mỗi `.mp4` được log thành `wandb.Video` (xem/tua ngay trong UI), đồng thời tất cả file được gói vào
-một WandB Artifact nên không mất khi session Kaggle kết thúc.
-
-Muốn media nằm **chung run với training** thay vì tạo run mới: lấy run id trên URL WandB
-(`.../runs/<id>`) rồi thêm `--run_id <id>`:
-
-```python
-!python kaggle/wandb_upload.py --project mimickit-smp --run_id abc12345 \
-    --dir {OUT}/playback --files {OUT}/policy.mp4 {OUT}/reference_data.mp4
-```
+Tất cả được gói vào một WandB Artifact nên không mất khi session Kaggle kết thúc. Thêm
+`--run_id {RUN_ID}` nếu muốn gắn vào chính run training.
 
 Nếu có train prior ở Cell 5, upload luôn sample của nó để soi prior:
 
@@ -330,20 +332,69 @@ Lý do nằm ở chỗ reward được cộng vào lúc nào:
 - Với `smp_humanoid_agent.yaml`, `task_reward_weight: 0.0` nên phần task reward cũng bằng 0 —
   không có task nào cả, chỉ có "giống clip tới đâu".
 
-Vậy nhìn vào đâu để biết đang học được hay không:
+Vậy nhìn vào đâu. Bảng dưới là các metric có trên WandB, xếp theo mức quan trọng:
 
-| Metric | Kỳ vọng | Ghi chú |
+| Metric | Kỳ vọng | Ý nghĩa |
 | --- | --- | --- |
-| `Smp_Reward_Mean` | **tăng** | chính là reward PPO đang tối ưu: `exp(-SDS_norm * sds_loss_scale)` |
-| `Sds_Loss_Mean` | **giảm** | SDS loss thô; càng nhỏ nghĩa là motion càng nằm trong phân phối của prior |
-| `Train_Episode_Length` / `Test_Episode_Length` | **tăng**, tiến tới 300 step (10 s) | tín hiệu trực quan nhất: dài ra = hết ngã sớm. Hai key này bị đánh dấu `quiet` nên **không in ra console**, chỉ có trong `log.txt` và trên WandB |
-| `Critic_Loss`, `Clip_Frac` | ổn định, không nổ | `Clip_Frac` ~0.1 là lành mạnh |
+| **`Fail_Frac`** | **giảm về 0** | tỉ lệ episode kết thúc vì **ngã** (`DoneFlags.FAIL`) trên tổng số episode kết thúc. Chỉ số thẳng thắn nhất cho câu hỏi "policy đứng được chưa" |
+| **`Ep_Len_Frac`** | **tăng về 1.0** | độ dài episode trung bình / độ dài tối đa (300 step). 0.14 = ngã sau 1.4 s |
+| **`Timeout_Frac`** | tăng về 1.0 | phần bù của `Fail_Frac` — episode sống hết 10 s |
+| `Train_Episode_Length` / `Test_Episode_Length` | tăng tới 300 | như trên nhưng tính bằng step. Giờ được **in ra console** luôn, không còn `quiet` |
+| `Sds_Loss_Mean` | **giảm** | SDS loss thô — motion càng nằm trong phân phối của prior thì càng nhỏ. Đây là thang **tuyệt đối**, so sánh được giữa các run |
+| `Sds_Loss_Norm_Mean` | giảm chậm | giá trị thật sự đi vào `exp(-x * sds_loss_scale)` |
+| `Sds_Norm_Scale` | giảm theo `Sds_Loss_Mean` | mẫu số của normalizer. Xem cùng 2 dòng trên thì hiểu ngay vì sao reward đứng yên |
+| `Smp_Reward_Mean` | tăng rồi bão hoà | reward trung bình. Bão hoà **không** = hết học, xem đoạn dưới |
+| `Smp_Reward_Max` / `Smp_Reward_P90` | tăng | nếu mean đứng mà P90 tăng → có một nhóm frame tốt hẳn lên |
+| `Reward_Mean` | = `Smp_Reward_Mean` khi `smp_reward_weight=1` | reward tổng PPO nhận, sau khi cân với task reward |
+| `Terminations` | — | số episode kết thúc trong iteration, để biết mẫu số của các `*_Frac` có đủ lớn không |
+| `Critic_Loss`, `Clip_Frac`, `Imp_Ratio` | ổn định | `Clip_Frac` ~0.1–0.2 và `Imp_Ratio` ~1.0 là PPO khoẻ |
 
-Lưu ý về thang đo `Smp_Reward_Mean`: `DiffNormalizer` chia SDS loss cho **trung bình động của chính
-nó** (cumulative, không reset). Nên reward là đại lượng *tương đối* — nó đo "hiện tại tốt hơn trung
-bình lịch sử bao nhiêu", không phải thang tuyệt đối 0→1. Đừng chờ nó chạy tới 1.0; cứ có xu hướng
-tăng đều là được. Ở iteration 20 (~1.3M samples) mọi thứ còn quá sớm để kết luận — spinkick thường
-cần hàng chục triệu samples mới thấy hình hài.
+**Vì sao `Smp_Reward_Mean` bão hoà mà vẫn đang học:** `DiffNormalizer` chia SDS loss cho **trung
+bình động tuyệt đối của chính nó** (cumulative, không reset). Loss giảm thì mẫu số cũng giảm theo,
+nên tỉ số — và reward — đứng yên. Đó là lý do cặp `Sds_Loss_Mean` (tử) + `Sds_Norm_Scale` (mẫu)
+được log riêng: **cứ nhìn `Sds_Loss_Mean` và `Fail_Frac`, đừng đánh giá tiến độ qua reward.**
+
+---
+
+## Train bao nhiêu samples là đủ?
+
+Số đo thực tế từ run đầu tiên (`smp_spinkick_humanoid`, 2× T4, `num_envs 1024`/GPU):
+
+| | |
+| --- | --- |
+| Tốc độ | **~11.500 samples/s** |
+| 60M samples | 915 iteration, **87 phút** |
+| Ngân sách 1 session Kaggle (9 h) | **~370M samples** |
+| Kết quả sau 60M | `Sds_Loss_Mean` 2.41 → 0.93 (vẫn đang giảm), ep_len 17 → 42 step (**mới 14% của 300**) |
+
+Kết luận: **60M samples là quá ngắn cho mimic.** Nó đủ để thấy xu hướng đúng, không đủ để ra động
+tác. Đặt `--max_samples` cho chạy gần hết session:
+
+```python
+!python mimickit/run.py --arg_file args/smp_humanoid_kaggle_args.txt \
+    --mode train --num_envs 1024 --max_samples 350000000 \
+    --logger wandb --out_dir /kaggle/working/output/smp_spinkick \
+    --devices cuda:0 cuda:1
+```
+
+Nối nhiều session bằng `--model_file`. Checkpoint lấy từ WandB Artifact của session trước
+(Cell 9), hoặc từ notebook output đã Save Version rồi attach làm input:
+
+```python
+# Kéo checkpoint của session trước từ WandB Artifact về
+!python kaggle/wandb_upload.py --project mimickit-smp \
+    --download smp_spinkick_files:latest --dest /kaggle/working/prev
+
+!python mimickit/run.py --arg_file args/smp_humanoid_kaggle_args.txt \
+    --mode train --num_envs 1024 --max_samples 350000000 \
+    --model_file /kaggle/working/prev/model.pt \
+    --logger wandb --out_dir /kaggle/working/output/smp_spinkick_s2 \
+    --devices cuda:0 cuda:1
+```
+
+> `--model_file` chỉ nạp trọng số model (actor/critic/normalizer) — bộ đếm `Samples` và optimizer
+> state bắt đầu lại từ 0, nên trên WandB session 2 là một đường cong mới. Muốn nhìn liền mạch thì so
+> `Sds_Loss_Mean` giữa các run, đừng so theo trục `Samples`.
 
 ---
 
@@ -354,7 +405,7 @@ tiên theo README_SMP: `smp_reward_weight` > `sds_loss_scale` >= `diffusion_step
 
 | Triệu chứng | Thử |
 | --- | --- |
-| Nhân vật ngã liên tục (`Train_Episode_Length` thấp, không tăng) | train thêm samples; giảm `action_std` (0.05 → 0.03); tăng `num_envs` nếu còn VRAM |
+| Ngã liên tục (`Fail_Frac` ~1.0, `Ep_Len_Frac` không tăng) | train thêm samples trước đã; sau đó giảm `action_std` (0.05 → 0.03); tăng `num_envs` nếu còn VRAM |
 | Chuyển động mượt nhưng "nhạt", không ra spinkick | tăng `sds_loss_scale` (6 → 8–10) |
 | Giật, run rẩy | giảm `sds_loss_scale`; thêm `action_reg_weight` nhỏ (vd 0.01) |
 | Học chậm | tăng `steps_per_iter` (32 → 64) để mỗi batch nhiều data hơn |
@@ -371,6 +422,8 @@ lại prior**.
 | Lỗi | Nguyên nhân / cách xử lý |
 | --- | --- |
 | `Train_Return` / `Test_Return` luôn = 0 | **không phải lỗi** — xem mục [Đọc metric](#đọc-metric-trainreturn--0-là-bình-thường) |
+| Upload WandB xong mà tab Media trống | mp4 chưa được tạo, `wandb_upload.py` chỉ in `[WARN] not a file` rồi bỏ qua. Dùng `kaggle/make_videos.py` — nó dừng ngay khi một bước fail |
+| `--video true` + 2 GPU crash ở logger | đã sửa: `_mp_aggregate` giờ bỏ qua entry không phải số (video) thay vì nhét vào all-reduce |
 | `ModuleNotFoundError: isaacgym` / `isaaclab` | thiếu `--engine_config data/engines/newton_engine.yaml` |
 | `SMP prior env mismatch for <key>` | prior train với env config khác env đang dùng → train lại prior, hoặc trỏ `smp_prior_cfg` về đúng prior |
 | `FileNotFoundError: data/models/smp_priors/...pt` | data pack chưa attach/link → chạy lại `kaggle/prepare_data.py`, hoặc train prior ở Cell 5 |
