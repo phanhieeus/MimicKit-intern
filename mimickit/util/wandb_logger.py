@@ -27,11 +27,22 @@ class WandbLogger(logger.Logger):
         super().configure_output_file(filename)
 
         if (logger.Logger.is_root()):
-            basename = os.path.basename(filename)
-            exp_name = os.path.splitext(basename)[0]
-            wandb.init(project=self._project_name, name=exp_name, config=self._param_config)
-        
+            project = os.environ.get("WANDB_PROJECT", self._project_name)
+            exp_name = os.environ.get("WANDB_NAME", self._build_exp_name(filename))
+            wandb.init(project=project, name=exp_name, config=self._param_config)
+
         return
+
+    def _build_exp_name(self, filename):
+        # The log file is almost always <out_dir>/log.txt, which would name every
+        # run "log" in the WandB UI. Fall back to the output directory name.
+        basename = os.path.basename(filename)
+        exp_name = os.path.splitext(basename)[0]
+        if (exp_name == "log"):
+            out_dir = os.path.basename(os.path.dirname(os.path.abspath(filename)))
+            if (out_dir != ""):
+                exp_name = out_dir
+        return exp_name
 
     def log(self, key, val, collection=None, quiet=False):
         super().log(key, val, collection, quiet)

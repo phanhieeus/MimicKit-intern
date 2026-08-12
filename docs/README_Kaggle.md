@@ -5,6 +5,8 @@ The ready-made notebook is [`kaggle/mimickit_kaggle.ipynb`](../kaggle/mimickit_k
 upload it to Kaggle and run the cells top to bottom.
 
 Step-by-step Vietnamese walkthrough: [HUONG_DAN_KAGGLE.md](HUONG_DAN_KAGGLE.md).
+For the SMP single-clip recipe end to end — prior, PPO policy, mp4 comparison, WandB upload —
+see [HUONG_DAN_SMP_KAGGLE.md](HUONG_DAN_SMP_KAGGLE.md).
 
 ## Which engine
 

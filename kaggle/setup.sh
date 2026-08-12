@@ -11,7 +11,8 @@ set -euo pipefail
 
 echo "=== apt packages (GL + virtual display, needed only for rendering/video) ==="
 apt-get update -qq
-apt-get install -y -qq xvfb libgl1 libglx-mesa0 libegl1 libglu1-mesa libosmesa6 > /dev/null
+# ffmpeg is what tools/render_robot_video.py pipes raw frames into to make the mp4.
+apt-get install -y -qq xvfb libgl1 libglx-mesa0 libegl1 libglu1-mesa libosmesa6 ffmpeg > /dev/null
 
 echo "=== python packages ==="
 # torch is already installed on Kaggle with the right CUDA build -- never let pip

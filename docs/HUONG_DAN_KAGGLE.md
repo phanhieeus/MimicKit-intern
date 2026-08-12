@@ -3,6 +3,9 @@
 Làm theo từng bước bên dưới. Bản tiếng Anh chi tiết hơn về lý do kỹ thuật:
 [README_Kaggle.md](README_Kaggle.md).
 
+Muốn train **SMP** (mimic 1 clip trên humanoid native, có prior + mp4 + WandB): xem
+[HUONG_DAN_SMP_KAGGLE.md](HUONG_DAN_SMP_KAGGLE.md).
+
 **Tóm tắt:** trên Kaggle không cài được Isaac Gym (cần tải thủ công sau khi đăng nhập NVIDIA, và chỉ
 hỗ trợ Python ≤ 3.8, trong khi Kaggle chạy Python 3.11). Vì vậy ta dùng engine **Newton**, cài
 được qua PyPI. Hệ quả: **mọi lệnh đều phải thêm** `--engine_config data/engines/newton_engine.yaml`,
