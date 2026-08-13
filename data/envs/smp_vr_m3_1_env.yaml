@@ -1,0 +1,63 @@
+env_name: "smp"
+
+char_file: "data/assets/vr_m3_1/vr_m3_1.xml"
+camera_mode: "track"
+
+episode_length: 10.0 # seconds
+global_obs: True
+root_height_obs: True
+pose_termination: False
+enable_phase_obs: False
+enable_tar_obs: False
+disc_dof_vel_obs: False
+num_disc_obs_steps: 10
+rand_reset: True
+
+ref_char_offset: [2.0, 0.0, 0.0] # m
+
+# [root_pos(3), root_rot_expmap(3), dof_pos(27)] = 33 entries.
+#
+# The humanoid version of this file is 34 wide (28 dofs) -- copying it over
+# silently misaligns every joint, so count before editing.
+#
+# Root height 0.854 m is where the M3.1's lowest collision vertex touches z=0
+# with the legs straight, measured off the MJCF rather than guessed. The two
+# 1.5708 entries are the elbows (indices 16 and 23): at elbow_pitch = 0 this
+# robot's forearms point straight forward, not down. Note 1.5708 is the upper
+# joint limit exactly, so leave it at or just under it.
+init_pose: [0.0, 0.0, 0.854,
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0,
+            0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0]
+
+enable_early_termination: True
+
+# M3.1 link names, not the humanoid's. `head`, `left_hand`, `left_foot` and the
+# rest do not exist on this robot and would fail the name lookup at startup.
+key_bodies: ["head_pitch_link",
+             "right_wrist_pitch_link", "left_wrist_pitch_link",
+             "right_ankle_roll_link", "left_ankle_roll_link"]
+
+# Bodies ALLOWED to touch the ground. Read it the right way round: deepmimic_env
+# compute_done zeroes the contact forces of the bodies listed here and ends the
+# episode if anything *else* is touching --
+#
+#   masked_contact_buf[:, contact_body_ids, :] = 0
+#   has_fallen = any(|masked| > 0.1)
+#
+# so an empty list means nothing may touch the ground and every episode dies on
+# frame one. Widen it with the motion, never shrink it:
+#   cartwheel, dive_kong, vault -> add the wrists, the hands carry load
+#   crawl, roll, getup          -> add the torso and forearms too
+#
+# Feet only is right for this clip: across all 1098 frames of long_zombie the
+# closest any other body comes to the floor is the knee at +5.3 cm, so the
+# reference itself never trips the check.
+contact_bodies: ["right_ankle_roll_link", "left_ankle_roll_link"]
+
+# Single-clip SMP runs with GSI disabled, so this file is what supplies the
+# reset states. It must be the same clip the prior was trained on.
+motion_file: "data/motions/vr_m3_1/vr_m3_1_long_zombie_fixed.pkl"

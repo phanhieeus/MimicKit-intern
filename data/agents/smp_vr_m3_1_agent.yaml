@@ -1,0 +1,58 @@
+agent_name: "SMP"
+
+model:
+  actor_net: "fc_2layers_1024units"
+  actor_init_output_scale: 0.01
+  actor_std_type: "FIXED"
+  action_std: 0.05
+
+  critic_net: "fc_2layers_1024units"
+
+actor_optimizer:
+    type: "SGD"
+    learning_rate: 1e-4
+
+critic_optimizer:
+    type: "SGD"
+    learning_rate: 1e-4
+
+discount: 0.99
+steps_per_iter: 32
+iters_per_output: 100
+test_episodes: 32
+normalizer_samples: 100000000
+use_mixed_precision: false
+
+actor_epochs: 5
+actor_batch_size: 4
+critic_epochs: 2
+critic_batch_size: 2
+
+td_lambda: 0.95
+ppo_clip_ratio: 0.2
+norm_adv_clip: 4.0
+action_bound_weight: 10.0
+action_entropy_weight: 0.0
+action_reg_weight: 0.0
+critic_loss_weight: 1.0
+
+smp_eval_batch_size: 4096
+sds_loss_scale: 6
+diffusion_steps: [22, 15, 8]
+
+# Single-clip SMP: no Generative State Initialization, so reset states come from
+# `motion_file` in the env config instead.
+enable_gsi: False
+
+# Pure imitation -- there is no task objective in the `smp` env. For the
+# task_location / task_steering / task_dodgeball envs, split these (0.5 / 0.5 is
+# the shipped default) and turn GSI on.
+task_reward_weight: 0.0
+smp_reward_weight: 1.0
+
+# Both must point at the M3.1 prior. There is no pretrained prior for this robot
+# -- `data/models/smp_priors/` is empty in this checkout, and the LaFAN1 prior
+# the docs mention is tied to the humanoid skeleton, so it could not be reused
+# here even if it were present. Train one first with train_tinymdm.py.
+smp_prior_cfg: "tools/diffusion_model/config/tinymdm_vr_m3_1.yaml"
+smp_prior_model: "output/smp_prior_vr_m3_1/model.pt"

@@ -1,0 +1,8 @@
+--num_envs 1024
+--visualize false
+
+--engine_config data/engines/newton_engine.yaml
+--env_config data/envs/smp_vr_m3_1_env.yaml
+--agent_config data/agents/smp_vr_m3_1_agent.yaml
+
+--out_dir output/smp_vr_m3_1

@@ -5,3 +5,12 @@ __pycache__/
 output/
 .vscode/
 wandb/
+data/MimicKit_Data
+.venv
+
+# Staging dir that kaggle/make_m3_dataset.sh builds before upload -- it is a
+# copy of gitignored robot data, so it must not come back in through the side.
+kaggle_dataset_vr_m3_1/
+
+# Videos pulled off Kaggle for inspection.
+output-mp4/
