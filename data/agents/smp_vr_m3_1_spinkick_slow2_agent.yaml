@@ -1,0 +1,80 @@
+agent_name: "SMP"
+
+model:
+  actor_net: "fc_2layers_1024units"
+  actor_init_output_scale: 0.01
+  actor_std_type: "FIXED"
+  action_std: 0.05
+
+  critic_net: "fc_2layers_1024units"
+
+actor_optimizer:
+    type: "SGD"
+    learning_rate: 1e-4
+
+critic_optimizer:
+    type: "SGD"
+    learning_rate: 1e-4
+
+discount: 0.99
+steps_per_iter: 32
+iters_per_output: 100
+test_episodes: 32
+normalizer_samples: 100000000
+use_mixed_precision: false
+
+actor_epochs: 5
+actor_batch_size: 4
+critic_epochs: 2
+critic_batch_size: 2
+
+td_lambda: 0.95
+ppo_clip_ratio: 0.2
+norm_adv_clip: 4.0
+action_bound_weight: 10.0
+action_entropy_weight: 0.0
+action_reg_weight: 0.0
+critic_loss_weight: 1.0
+
+smp_eval_batch_size: 4096
+sds_loss_scale: 6
+diffusion_steps: [22, 15, 8]
+
+# Left at the default np.inf (smp_agent.py:28) on purpose -- do not set
+# sds_normalizer_samples here.
+#
+# The first M3.1 run froze it at 50M to make Smp_Reward_Mean readable across
+# iterations, and that turned out to cost more than it bought. DiffNormalizer
+# divides the SDS loss by its own running mean-abs, so while it keeps updating,
+# the denominator shrinks alongside the loss and the reward's sensitivity to the
+# remaining error keeps rising -- an automatic curriculum that sharpens as the
+# policy improves. The humanoid run rode that the whole way: Sds_Norm_Scale fell
+# 1.33 -> 0.426 over 350M samples. Freezing M3.1's at 0.869 switched the
+# curriculum off at 50M, and Sds_Loss_Mean then sat at 0.257 from 137M to 216M
+# without moving while Ep_Len_Frac went on climbing -- the policy was still
+# learning to stay up, but had stopped learning to imitate.
+#
+# Read Sds_Loss_Mean instead of Smp_Reward_Mean for progress. It is already an
+# absolute quantity and comparable across runs; the reward is not, because each
+# run carries its own scale.
+#
+# For a screening run under 50M samples this changes nothing either way -- the
+# freeze only takes effect at 50M -- so an A/B against the frozen baseline stays
+# valid.
+
+# Single-clip SMP: no Generative State Initialization, so reset states come from
+# `motion_file` in the env config instead.
+enable_gsi: False
+
+# Pure imitation -- there is no task objective in the `smp` env. For the
+# task_location / task_steering / task_dodgeball envs, split these (0.5 / 0.5 is
+# the shipped default) and turn GSI on.
+task_reward_weight: 0.0
+smp_reward_weight: 1.0
+
+# Both must point at the M3.1 spinkick prior. The data pack's
+# smp_prior_spinkick.pt is tied to the humanoid's 28-dof skeleton and cannot be
+# reused here -- train one with train_tinymdm.py first, then point
+# smp_prior_model at the model.pt it writes.
+smp_prior_cfg: "tools/diffusion_model/config/tinymdm_vr_m3_1_spinkick_slow2.yaml"
+smp_prior_model: "output/smp_prior_vr_m3_1_spinkick_slow2/model.pt"

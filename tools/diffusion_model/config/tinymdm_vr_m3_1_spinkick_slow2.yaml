@@ -1,0 +1,54 @@
+model_name: "tiny_mdm"
+arch_name: "DiT"
+
+T: 50
+loss_type: 'l1'
+estimate_mode: 'epsilon'
+noise_schedule_mode: 'squaredcos_cap_v2'
+
+num_layers: 2
+num_attention_heads: 4 # inner_dim = heads * 64
+
+model_ema: True
+model_ema_decay: 0.995
+model_ema_steps: 10
+model_ema_update_after: 5_000
+
+normalizer_std_clip: 0.2
+
+batch_size: 512
+lr: 0.0001
+num_iterations: 50_000
+num_samples_stat: 10_000
+output_iter: 2_000
+grad_clip_norm: 1.0
+
+# The prior reads the character through this env config, so it must be the M3.1
+# one -- a prior trained against the humanoid's 28 dofs cannot drive a 27-dof
+# robot, and nothing checks the width for you.
+#
+# Pointing it at the same env file the RL stage uses is not just convenient: it
+# makes five of the six asserts in SMPAgent._check_prior_env_config pass by
+# construction (global_obs, root_height_obs, enable_tar_obs, num_disc_obs_steps,
+# disc_dof_vel_obs, plus the key_bodies count). Only control_freq below is left
+# to keep in sync by hand.
+env_config: "data/envs/smp_vr_m3_1_spinkick_slow2_env.yaml"
+
+# Must match motion_file in the env config above. If the prior learns one clip
+# and the env resets from another, the policy is rewarded for imitating a motion
+# it is never initialised into.
+motion_file: "data/motions/vr_m3_1/vr_m3_1_humanoid_spinkick_slow2.pkl"
+
+# Must equal control_freq in data/engines/newton_engine.yaml, or the agent
+# asserts at startup.
+control_freq: 30
+
+# Dead key, kept only because upstream's tinymdm configs carry it. Nothing reads
+# it here: `master_port` is parsed by mimickit/run.py for the RL stage, and
+# train_tinymdm.py reads config by explicit key without ever asking for it.
+#
+# Prior training is single-GPU. train_tinymdm.py is a plain one-process loop --
+# no torch.distributed, no DDP, and a singular --device flag -- so the second T4
+# is idle for this stage. Multi-GPU in MimicKit lives only in run.py's
+# --devices, which spawns one process per device over NCCL.
+master_port: '11435'
