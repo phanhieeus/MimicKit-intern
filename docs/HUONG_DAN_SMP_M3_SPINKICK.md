@@ -73,6 +73,13 @@ Output phải là hai dòng `Tesla T4`. Thấy `P100` thì đổi accelerator r�
 import os, shutil
 REPO = "/kaggle/working/MimicKit-intern"
 token = os.environ["GITHUB_TOKEN"]
+
+# Step out of REPO before deleting it. On a re-run the kernel's cwd is still
+# inside from the last time this cell ran, and rmtree then pulls the ground out
+# from under the process: getcwd() starts failing, git clone dies with
+# "Unable to read current working directory", and the cell finally raises
+# FileNotFoundError on the os.chdir below -- three errors, one cause.
+os.chdir("/kaggle/working")
 shutil.rmtree(REPO, ignore_errors=True)
 !git clone --depth 1 https://{token}@github.com/phanhieeus/MimicKit-intern.git {REPO}
 os.chdir(REPO)
