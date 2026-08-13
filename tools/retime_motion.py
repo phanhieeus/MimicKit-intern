@@ -40,12 +40,83 @@ stage -- reusing the old prior would score the new motion against the old timing
 """
 
 import argparse
+import glob as globlib
 import os
 import pickle
 import sys
 import xml.etree.ElementTree as ET
 
 import numpy as np
+
+
+def _fk_foot_heights(char_file, frames):
+    """World-space height of every foot-ish body, per frame.
+
+    Imported lazily: the torque half of this script runs on numpy and an XML
+    parser alone, and staying that light is worth keeping for the common case.
+    """
+    import torch
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mimickit"))
+    import anim.mjcf_char_model as mjcf_char_model
+    import util.torch_util as torch_util
+
+    char = mjcf_char_model.MJCFCharModel("cpu")
+    char.load(char_file)
+    names = char.get_body_names()
+
+    f = torch.tensor(frames, dtype=torch.float32)
+    body_pos, _ = char.forward_kinematics(
+        f[:, 0:3], torch_util.exp_map_to_quat(f[:, 3:6]), char.dof_to_rot(f[:, 6:]))
+
+    feet = [i for i, n in enumerate(names) if "ankle" in n or "foot" in n or "toe" in n]
+    if not feet:
+        return None
+    return body_pos[:, feet, 2].min(dim=1).values.numpy()
+
+
+def flight_phase(char_file, frames, fps, clearance=0.05):
+    """How long the clip spends with no foot on the ground, and what jump that implies.
+
+    This is the check that matters most before retiming, and the one this script
+    originally lacked. Torque scales as 1/s^2, so slowing a clip down always makes
+    its torques easier -- but only while something is touching the floor. A flight
+    phase is ballistic: staying airborne for time t requires a jump of g*t^2/8,
+    so doubling the duration asks for *four times* the height. Retiming a jump
+    makes it dramatically harder, and nothing in the torque table says so.
+
+    The M3.1 spinkick is the case in point. It is not a pivot kick: 31 of its 78
+    frames have both feet clear, a 0.47 s flight needing a ~27 cm jump, with the
+    root rising 40 cm and the kicking foot reaching 1.8 m. Retimed 2x it asks for
+    a 1.08 m jump, which is why the retimed run came out slightly *worse*.
+    """
+    heights = _fk_foot_heights(char_file, frames)
+    if heights is None:
+        return None
+
+    sole = float(heights.min())
+    airborne = heights > sole + clearance
+
+    runs, count = [], 0
+    for flag in airborne:
+        if flag:
+            count += 1
+        elif count:
+            runs.append(count)
+            count = 0
+    if count:
+        runs.append(count)
+
+    longest = max(runs) if runs else 0
+    seconds = longest / fps
+    root_z = np.asarray(frames)[:, 2]
+
+    return dict(
+        frames_airborne=int(airborne.sum()),
+        total_frames=len(heights),
+        longest_seconds=seconds,
+        implied_jump=9.81 * seconds ** 2 / 8.0,
+        root_rise=float(root_z.max() - root_z.min()),
+        sole=sole)
 
 
 # ---------------------------------------------------------------- MJCF inertia
@@ -249,6 +320,66 @@ def retime(frames, factor):
 
 # ---------------------------------------------------------------- entry point
 
+def scan(args):
+    """Rank a directory of clips so a first motion can be chosen on evidence.
+
+    Two numbers decide whether a clip is worth a GPU. Flight time is the harder
+    constraint: it cannot be retimed away, and a robot that cannot jump cannot do
+    the motion at any speed. Torque overshoot is the softer one, since a clip that
+    stays on the ground can be slowed until it fits.
+    """
+    limits = load_joint_limits(args.char_file)
+    paths = sorted(globlib.glob(args.scan))
+    if not paths:
+        print("nothing matches {!r}".format(args.scan), file=sys.stderr)
+        return 2
+
+    rows = []
+    for path in paths:
+        try:
+            with open(path, "rb") as handle:
+                motion = pickle.load(handle)
+            frames = np.array(motion["frames"], dtype=np.float64)
+            fps = float(motion["fps"])
+            if frames.shape[1] != 6 + len(limits):
+                continue
+            torque = torque_table(frames, fps, limits)
+            worst = max(torque, key=lambda r: r["ratio"])
+            legs = [r for r in torque
+                    if not any(x in r["name"] for x in ("shoulder", "elbow", "wrist"))]
+            worst_leg = max(legs, key=lambda r: r["ratio"])
+            air = flight_phase(args.char_file, frames, fps)
+            rows.append(dict(
+                name=os.path.basename(path).replace(".pkl", ""),
+                seconds=(len(frames) - 1) / fps,
+                flight=air["longest_seconds"] if air else float("nan"),
+                jump=air["implied_jump"] if air else float("nan"),
+                leg=worst_leg["ratio"], leg_name=worst_leg["name"],
+                worst=worst["ratio"]))
+        except Exception as exc:
+            print("[skip] %s: %s" % (os.path.basename(path), type(exc).__name__))
+
+    # Ground-contact clips first, then the least torque-hungry: that is the order
+    # you actually want to try them in.
+    rows.sort(key=lambda r: (r["jump"] > 0.08, r["jump"], r["leg"]))
+
+    print("%d clip(s), ranked most trainable first\n" % len(rows))
+    print("%-42s %6s %7s %7s %8s  %s" % (
+        "clip", "sec", "flight", "jump", "leg tau", "worst leg joint"))
+    for r in rows:
+        flag = "" if r["jump"] <= 0.08 else "  <-- JUMPS"
+        print("%-42s %6.2f %6.2fs %6.0fcm %7.2fx  %-24s%s" % (
+            r["name"], r["seconds"], r["flight"], r["jump"] * 100,
+            r["leg"], r["leg_name"].replace("_joint", ""), flag))
+
+    ok = [r for r in rows if r["jump"] <= 0.08]
+    print("\n%d of %d clips keep a foot down throughout." % (len(ok), len(rows)))
+    if ok:
+        best = [r for r in ok if r["leg"] <= 1.0]
+        print("%d of those also stay inside every leg torque limit as-is." % len(best))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -264,7 +395,15 @@ def main():
                              "topple the robot, and demanding they comply makes the clip "
                              "far slower than balance needs.")
     parser.add_argument("--report", action="store_true", help="Print the table and exit.")
+    parser.add_argument("--scan", metavar="GLOB",
+                        help="Rank many clips by feasibility instead of examining one. "
+                             "Use this to pick a first motion for a new robot.")
+    parser.add_argument("--no_flight_check", action="store_true",
+                        help="Skip the flight-phase check (it needs torch).")
     args = parser.parse_args()
+
+    if args.scan:
+        return scan(args)
 
     with open(args.input, "rb") as handle:
         motion = pickle.load(handle)
@@ -276,6 +415,27 @@ def main():
 
     print("%s: %d frames @ %g fps = %.3f s\n" % (
         os.path.basename(args.input), len(frames), fps, (len(frames) - 1) / fps))
+
+    if not args.no_flight_check:
+        air = flight_phase(args.char_file, frames, fps)
+        # Judge on implied jump height, not on airborne time. Every walk has
+        # frames where both feet clear the floor by a few centimetres -- a scuff
+        # between steps, or retarget noise. 8 cm is the line between that and a
+        # robot actually leaving the ground.
+        if air and air["implied_jump"] > 0.08:
+            print("=== FLIGHT PHASE: %.2f s (%d of %d frames off the ground) ===" % (
+                air["longest_seconds"], air["frames_airborne"], air["total_frames"]))
+            print("    root rises %.0f cm; ballistics need a %.0f cm jump" % (
+                air["root_rise"] * 100, air["implied_jump"] * 100))
+            print("    DO NOT RETIME THIS CLIP. Jump height goes as the square of flight")
+            print("    time, so 2.0x asks for %.0f cm and 1.5x for %.0f cm. Slowing a jump" % (
+                9.81 * (2 * air["longest_seconds"]) ** 2 / 8.0 * 100,
+                9.81 * (1.5 * air["longest_seconds"]) ** 2 / 8.0 * 100))
+            print("    down makes it harder, not easier -- pick a different motion.\n")
+        elif air:
+            print("no real flight phase (implied jump %.0f cm); safe to retime.\n"
+                  % (air["implied_jump"] * 100))
+
     print_report(rows, 1.0)
 
     if args.auto:

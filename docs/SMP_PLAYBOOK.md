@@ -147,9 +147,12 @@ hỏng. Kiểm bằng origin của body thì đầu gối M3.1 cách đất +38.
 chạm của nó là một capsule chạy dọc ống chân xuống tận cổ chân, và điểm thấp nhất của capsule đó chỉ
 cách đất **+4.1 cm** trong clip — gần bằng chính đế bàn chân (+4.4 cm).
 
-Nghĩa là clip tham chiếu đi sát mép tử vong 4 cm, trên một body **không** nằm trong `contact_bodies`.
-Robot chỉ cần bám quỹ đạo lệch một chút là ống chân quét đất và episode chết ngay. Mà M3.1 võng gối
-24° do gains yếu, nên lệch là chuyện đương nhiên.
+So với đế bàn chân, ống chân chỉ cao hơn **6.3 cm**. Robot bám quỹ đạo lệch quá chừng đó là ống chân
+quét đất và episode chết ngay, mà M3.1 võng gối 24° do gains yếu.
+
+**Đây là rủi ro của riêng robot, không phải của riêng clip nào.** Đo trên zombie_walk cho biên +6.3 cm,
+trên spinkick +6.4 cm — y hệt nhau. Nên nó không giải thích được vì sao spinkick hỏng còn clip khác
+thì không; nó chỉ nói M3.1 có ít dư địa sai sót hơn humanoid ở mọi động tác.
 
 Humanoid không có vấn đề này: 15 body, hình khối primitive, chỉ 13 body có thể kết thúc episode.
 M3.1 có 30 body, 21 mang geom va chạm, **19 body có thể kết thúc episode**.

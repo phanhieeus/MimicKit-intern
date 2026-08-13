@@ -7,7 +7,7 @@
 # STL and pickles, but it means a `git clone` on Kaggle gets the configs and none
 # of the data they point at. A Kaggle Dataset is the transport.
 #
-#   bash kaggle/make_m3_dataset.sh                    # spinkick only, ~70 MB
+#   bash kaggle/make_m3_dataset.sh                    # zombie_walk + spinkick, ~70 MB
 #   bash kaggle/make_m3_dataset.sh --all-motions      # all 266 clips, ~97 MB
 #   bash kaggle/make_m3_dataset.sh --clip vr_m3_1_humanoid_cartwheel.pkl
 #
@@ -26,7 +26,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${REPO_ROOT}/kaggle_dataset_vr_m3_1"
-CLIPS=("vr_m3_1_humanoid_spinkick.pkl")
+# zombie_walk first: it ranked 2nd of 267 clips under `retime_motion.py --scan`
+# (no flight phase, worst leg torque 0.28x) and is the recommended first motion for
+# this robot. spinkick rides along for comparison, but see SMP_PLAYBOOK.md 4.1 --
+# it needs a 27 cm jump and cost a 320M-sample run.
+CLIPS=("vr_m3_1_humanoid_zombie_walk.pkl" "vr_m3_1_humanoid_spinkick.pkl")
 ALL_MOTIONS=0
 
 while [[ $# -gt 0 ]]; do
