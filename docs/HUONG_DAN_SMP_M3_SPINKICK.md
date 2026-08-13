@@ -8,6 +8,48 @@ prior, hay hyperparameter.
 Nền tảng lý thuyết và cách đọc số: [SMP_PLAYBOOK.md](SMP_PLAYBOOK.md).
 Bản humanoid: [HUONG_DAN_SMP_KAGGLE.md](HUONG_DAN_SMP_KAGGLE.md).
 
+## ĐỌC TRƯỚC: đừng train spinkick
+
+Spinkick đã được thử hết mức và **thất bại**: 320 M sample, 9.94 h, kết thúc với robot đứng rung tại
+chỗ không đá lần nào. Nguyên nhân đã đo được — clip chứa **pha bay 0.47 giây**, đòi hỏi cú nhảy 27 cm
+với robot 57 kg võng gối 24°. Không sửa được bằng giãn clip: chiều cao nhảy tỉ lệ với bình phương
+thời gian bay, nên giãn 2× lại đòi nhảy 108 cm. Chi tiết ở [SMP_PLAYBOOK.md §4.1](SMP_PLAYBOOK.md).
+
+**Dùng `zombie_walk`.** Nó xếp thứ 2 trên 267 clip theo `retime_motion.py --scan`:
+
+| | spinkick | **zombie_walk** |
+|---|---|---|
+| Độ dài | 1.28 s | 1.68 s |
+| Pha bay | **0.47 s, nhảy 27 cm** | **không có** |
+| Mô-men chân tệ nhất | **2.46×** giới hạn | **0.28×** |
+| Số khớp vượt limit | 13/27 | 0 |
+
+Tự chạy lại bảng xếp hạng bất cứ lúc nào:
+
+```bash
+python tools/retime_motion.py --input /dev/null \
+    --char_file data/assets/vr_m3_1/vr_m3_1.xml \
+    --scan 'data/motions/vr_m3_1/*.pkl'
+```
+
+98/267 clip giữ chân chạm đất; 24 clip trong đó còn nằm trọn trong giới hạn mô-men.
+
+### Đổi gì trong notebook
+
+Bốn config `*_zombie_walk` đã có sẵn và đã kiểm. So với bộ cell bên dưới:
+
+- **Bỏ Cell 4b** — không giãn clip. 0.28× thì không cần, và giãn clip chỉ đúng khi không có pha bay.
+- Cell 1: `WANDB_NAME = "smp_m3_zombie_walk"`.
+- Cell 4: đổi assert sang `vr_m3_1_humanoid_zombie_walk.pkl`.
+- Cell 5/6/8a/8/9: đổi mọi `_slow2` thành `_zombie_walk`, và `output/smp_m3_spinkick_slow2` thành
+  `output/smp_m3_zombie_walk`.
+- Prior phải train mới (~35 phút), sau đó `prior_cache.py` tự tái sử dụng.
+
+Tiêu chí nghiệm thu **không đổi và không phải `Ep_Len_Frac`**: `Quality/Coverage < 0.55` do Cell 9 tự
+chấm. Run spinkick kết thúc ở `Ep_Len_Frac` 0.827 mà coverage 0.89 — hỏng hoàn toàn.
+
+---
+
 ## Khác gì so với humanoid
 
 | | Humanoid | M3.1 |
