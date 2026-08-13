@@ -180,23 +180,24 @@ Mất session vẫn lấy lại được:
     --arg_file args/smp_vr_m3_1_spinkick_kaggle_args.txt \
     --mode train \
     --num_envs 1024 \
-    --max_samples 320000000 \
+    --max_samples 200000000 \
     --logger wandb \
     --out_dir /kaggle/working/output/smp_m3_spinkick \
     --devices cuda:0 cuda:1
 ```
 
-320 M là con số đo được từ run humanoid — xem [SMP_PLAYBOOK.md §6.1](SMP_PLAYBOOK.md).
+**200 M chứ không phải 320 M của humanoid.** Hai hiệu ứng ngược chiều nhau, đừng lẫn:
 
-**Nhưng M3.1 chậm hơn humanoid đáng kể.** Throughput đo thực tế là **9 274 samples/s**, chỉ 71 %
-của humanoid (13 058) — 27 dof, 30 body, mesh STL thật thay vì primitive. Nên 320 M ở đây tốn
-**9 h 35 m** chứ không phải 6 h 35 m, và cả session (prior + setup + train + video) là **~10 h 30 m**.
+- M3.1 **nhanh hơn về sample** — đạt bước ngoặt ở 46 M, humanoid cần 93 M. Ước tính hội tụ quanh
+  160–200 M thay vì 310 M.
+- M3.1 **chậm hơn về giây** — 9 000–9 300 samples/s, chỉ ~70 % của humanoid (13 058), vì 27 dof,
+  30 body và mesh STL thật.
 
-Hệ quả: chỉ chạy được ở **batch 12 h**, còn dư khoảng 1.5 h. Interactive 9 h thì cell train bị giết
-giữa chừng ở quanh 260–275 M và Cell 9 không bao giờ chạy.
+200 M ≈ **6 h 10 m**, cả session ~7 h 05 m. Đặt 320 M thì thành ~10 h 30 m — vẫn lọt batch 12 h nhưng
+sát nút, và ăn gần hết quota tuần. Số liệu đầy đủ ở mục
+[Ngân sách sample](#ngân-sách-sample-m31-cần-ít-hơn-humanoid) bên dưới.
 
-Muốn dư dả hơn thì hạ xuống `--max_samples 260000000` (7 h 47 m). Humanoid ở mốc tương đương đã qua
-điểm hết ngã từ lâu, nên đánh đổi này gần như không mất chất lượng.
+Theo dõi `Sds_Loss_Mean`: còn giảm rõ ở 200 M thì nối thêm session, phẳng sớm thì lần sau hạ tiếp.
 
 ```python
 # Cell 8b — tắt watchdog sau khi train xong
@@ -226,23 +227,61 @@ lý do ở [SMP_PLAYBOOK.md §7](SMP_PLAYBOOK.md).
 
 ---
 
-## Mốc so sánh với humanoid
+## Ngân sách sample: M3.1 cần ÍT hơn humanoid
 
-Chạy trên cùng clip nên đối chiếu trực tiếp được. Từ run humanoid `m6rv7ht3`:
+Đây là kết quả bất ngờ nhất từ run `wjw4wwo3`, và là lý do Cell 8 dùng 200 M thay vì 320 M.
 
-| Samples | `Sds_Loss_Mean` | `Ep_Len_Frac` |
-|---|---|---|
-| 60 M | 0.93 | 0.14 |
-| 93 M | 0.472 | 0.79 ← bước ngoặt |
-| 132 M | 0.270 | 0.98 |
-| 309 M | 0.188 | 0.99 |
+Cùng clip nên đối chiếu trực tiếp được. `Ep_Len_Frac` và `Fail_Frac` đo cùng một thứ trên cả hai
+robot — trần 300 step, "có trụ được không":
 
-Nếu tới 130 M mà `Ep_Len_Frac` của M3.1 vẫn dưới 0.3 thì nó đang tụt xa so với humanoid — dừng lại
-soi config thay vì đốt tiếp GPU. Nghi ngờ theo thứ tự: `init_pose` (chiều cao root, thứ tự dof),
-gains PD trong MJCF, rồi mới tới chất lượng retarget của clip.
+| Samples | Humanoid `Ep_Len_Frac` | **M3.1 `Ep_Len_Frac`** | Humanoid `Fail_Frac` | **M3.1 `Fail_Frac`** |
+|---|---|---|---|---|
+| 13 M | ~0.06 | 0.087 | 1.0 | 1.0 |
+| 26 M | ~0.08 | 0.100 | 1.0 | 1.0 |
+| 46 M | ~0.11 | **0.170** | 1.0 | **0.896** ← M3.1 vỡ |
+| 52 M | ~0.12 | **0.236** | 1.0 | **0.820** |
+| 60 M | 0.139 | – | 1.0 | – |
+| 93 M | 0.79 | – | 0.22 ← humanoid vỡ | – |
 
-Ngược lại, `Sds_Loss_Mean` của hai robot **không** so trực tiếp được — chúng chuẩn hoá theo hai
-prior khác nhau, trên hai không gian obs khác nhau. Chỉ so hình dạng đường cong, đừng so giá trị.
+**M3.1 đạt bước ngoặt ở 46 M, humanoid cần 93 M — hiệu quả gấp đôi trên mỗi sample.**
+
+Giả thuyết: robot thật có phân bố khối lượng, quán tính và gains PD thực tế nên dễ trụ hơn cái
+humanoid dựng bằng primitive; clip retarget cũng có thể mượt hơn. Chưa kiểm chứng, nhưng xu hướng
+nhất quán qua bốn mốc liên tiếp.
+
+Chiếu theo tỉ lệ đó — humanoid hội tụ ở 310 M — M3.1 nhiều khả năng phẳng quanh **160–200 M**:
+
+```
+--max_samples 200000000
+```
+
+Ở 9 000 samples/s là **6 h 10 m**, cộng prior 40 phút + setup 5 phút + video 10 phút ⇒ **~7 h 05 m**
+cả session. So với 320 M (~10 h 30 m) thì đây là khác biệt giữa "dư biên thật" và "sát nút".
+
+**Vẫn theo dõi `Sds_Loss_Mean` để quyết định thay vì tin con số.** Nếu ở 200 M nó còn giảm rõ thì nối
+thêm một session; nếu phẳng từ 150 M thì lần sau hạ tiếp.
+
+### Nếu M3.1 tụt lại thay vì vượt lên
+
+Kịch bản ngược: tới 130 M mà `Ep_Len_Frac` vẫn dưới 0.3 (humanoid ở mốc đó đạt 0.98). Dừng soi config
+thay vì đốt tiếp GPU. Nghi ngờ theo thứ tự: `init_pose` (chiều cao root, thứ tự dof), gains PD trong
+MJCF, rồi mới tới chất lượng retarget của clip.
+
+### Hai thứ KHÔNG so được giữa hai robot
+
+**`Sds_Loss_Mean`** — chuẩn hoá theo hai prior khác nhau, trên hai không gian obs khác nhau. Chỉ so
+hình dạng đường cong, đừng so giá trị.
+
+**Thời gian.** M3.1 chạy **9 000–9 300 samples/s**, chỉ ~70 % của humanoid (13 058) vì 27 dof, 30 body
+và mesh STL thật. Nhanh hơn về sample nhưng chậm hơn về giây — hai điều này ngược chiều nhau và rất
+dễ lẫn.
+
+### Cảnh báo về credit
+
+Quota GPU của Kaggle tính theo giờ đồng hồ, không theo sample. Với M3.1 thì một session 320 M ăn
+**~10 h 30 m** quota — gần hết hạn mức tuần nếu bạn đã dùng trước đó. Tính credit còn lại **trước**
+khi bấm Save & Run All, và luôn bật Cell 8a watchdog: hết quota giữa chừng thì version bị đánh dấu
+failed và output không được lưu, tức mất sạch `model.pt` dù mọi metric đã lên WandB.
 
 ## Đã kiểm sẵn cho clip này
 

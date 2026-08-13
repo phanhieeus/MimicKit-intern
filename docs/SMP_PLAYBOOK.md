@@ -212,11 +212,13 @@ thì vấn đề nằm ở prior, ở reward scale, hoặc ở chính clip — k
 |---|---|
 | Prior TinyMDM, 50 k iter | 1 GPU, vài chục phút cho clip đơn |
 | Policy tới khi hết ngã | ~90 M samples |
-| Policy tới khi hội tụ | ~310 M samples ≈ 6 h 35 m trên 2× T4 (xem §6.1) |
+| Policy tới khi hội tụ | ~310 M samples ≈ 6 h 35 m trên 2× T4 (humanoid; §6.1) |
 | Rollout + render 3 video | ~2–3 phút |
 
 Throughput thực đo: **13 058 samples/s** với `--num_envs 1024 --devices cuda:0 cuda:1`
 (1024 là **mỗi GPU**, tổng 2048 env). Kaggle giới hạn 9 h interactive / 12 h batch.
+
+Mọi con số ở mục này là của **humanoid native**. Sang robot khác phải đo lại — xem [§6.1b](#61b-ngân-sách-phụ-thuộc-robot--đo-lại-đừng-chép).
 
 ### 6.1 Gọn trong MỘT session — cách nên làm
 
@@ -265,6 +267,28 @@ Chạy một session thì **bỏ hẳn** hai cell nối session: không cần
 secrets → clone → setup.sh → prepare_data.py → [train prior] → smoke test
         → train policy (--max_samples 320000000) → make_videos.py → upload model.pt
 ```
+
+### 6.1b Ngân sách phụ thuộc robot — đo lại, đừng chép
+
+310 M là con số của **humanoid**. Nó không chuyển sang robot khác được, và sai theo **cả hai chiều
+cùng lúc**:
+
+| | Humanoid | VR M3.1 |
+|---|---|---|
+| Throughput | 13 058 /s | **9 000–9 300 /s** (~70 %) |
+| Bước ngoặt (`Fail_Frac` rời 1.0) | 93 M | **46 M** (~2× hiệu quả hơn) |
+| Hội tụ | 310 M | ước ~160–200 M |
+| Thời gian tới hội tụ | 6 h 35 m | ước ~6 h 10 m |
+
+M3.1 **nhanh hơn về sample** nhưng **chậm hơn về giây**. Hai hiệu ứng gần như triệt tiêu nhau ở đây,
+nhưng đó là trùng hợp — với robot khác chúng có thể cộng dồn theo hướng xấu.
+
+Vì sao M3.1 hiệu quả hơn: giả thuyết là robot thật có phân bố khối lượng, quán tính và gains PD thực
+tế nên dễ trụ hơn humanoid dựng bằng primitive. Chưa kiểm chứng.
+
+**Cách làm đúng cho một robot mới:** chạy 60 M thăm dò, ghi lại `Fail_Frac` rời 1.0 ở mốc nào, rồi
+nhân mốc đó với ~3.5 (tỉ lệ 93 M → 310 M của humanoid) để ước ngân sách hội tụ. Rẻ hơn nhiều so với
+đặt bừa 320 M rồi phát hiện thiếu hoặc thừa sau tám tiếng.
 
 ### 6.2 Khi nào vẫn nên chia hai session
 
