@@ -135,7 +135,7 @@ os.chdir(REPO)
 
 ```python
 # Cell 4 — data: pack gốc + dataset M3.1
-import os, subprocess
+import os, subprocess, sys
 
 # Bắt buộc, phải trước prepare_data.py. link_tree() symlink CẢ thư mục nếu đích
 # chưa tồn tại, và đích đó là /kaggle/input chỉ đọc -- Cell 4b sẽ không ghi được
@@ -143,10 +143,22 @@ import os, subprocess
 # được, và các file thật nằm cạnh symlink không sao cả.
 os.makedirs("data/motions/vr_m3_1", exist_ok=True)
 
-for name in sorted(os.listdir("/kaggle/input")):
-    path = os.path.join("/kaggle/input", name)
+# Find every data pack, at whatever depth Kaggle mounted it. The layout is not
+# stable: sometimes /kaggle/input/<slug>/, sometimes
+# /kaggle/input/datasets/<owner>/<slug>/. Listing one level down silently found a
+# single entry named "datasets", so only the first pack got linked and the second
+# vanished -- exactly the failure the per-dataset loop was written to prevent.
+# A pack is any directory holding both assets/ and motions/, so look for that
+# instead of guessing the path shape.
+packs = []
+for dirpath, dirnames, _ in os.walk("/kaggle/input"):
+    if {"assets", "motions"} <= set(dirnames):
+        packs.append(dirpath)
+        dirnames[:] = []          # found the pack; do not descend into it
+print("found {} pack(s)".format(len(packs)))
+for path in packs:
     print("=== {} ===".format(path))
-    subprocess.run(["python", "kaggle/prepare_data.py", "--input_root", path])
+    subprocess.run([sys.executable, "kaggle/prepare_data.py", "--src", path])
 
 !ls data/assets/vr_m3_1/ && ls data/motions/vr_m3_1/ && ls data/motions/ | head
 ```
