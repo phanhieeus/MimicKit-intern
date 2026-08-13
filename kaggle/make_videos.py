@@ -186,7 +186,37 @@ def main():
 
     if not args.no_upload:
         upload(videos, args)
-    return 0
+
+    # Scoring runs last and never blocks the upload: the videos and the
+    # checkpoint are the things worth losing sleep over, and a scoring bug must
+    # not take them down with it. The exit code still carries the verdict.
+    return score_rollout(args)
+
+
+def score_rollout(args):
+    """Grade the final rollout against the clip, and say so on WandB.
+
+    Ep_Len_Frac and Sds_Loss cannot distinguish imitation from mode collapse --
+    the M3.1 spinkick run finished at Ep_Len_Frac 0.827 with a lower Sds_Loss
+    than the converged humanoid while balancing on one leg and never kicking. So
+    the videos are not the last word either; something has to measure the
+    rollout. See tools/motion_quality.py.
+    """
+    policy_pkl = os.path.join(args.out_dir, "playback_final", "policy.pkl")
+    if not args.motion_file or not os.path.isfile(policy_pkl):
+        return 0
+
+    cmd = [sys.executable, "tools/motion_quality.py",
+           "--policy", policy_pkl, "--reference", args.motion_file]
+    if not args.no_upload:
+        cmd += ["--wandb_project", args.wandb_project,
+                "--wandb_run_name", "{}_quality".format(os.path.basename(args.out_dir))]
+        if args.wandb_run_id:
+            cmd += ["--wandb_run_id", args.wandb_run_id]
+
+    print("\n=== motion quality ===")
+    print("$ " + " ".join(cmd))
+    return subprocess.run(cmd, cwd=REPO_ROOT).returncode
 
 
 if __name__ == "__main__":
