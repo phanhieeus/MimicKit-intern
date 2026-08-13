@@ -43,8 +43,10 @@ from __future__ import annotations
 import argparse
 import os
 import pickle
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -108,6 +110,32 @@ def load_motion(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     )
 
 
+def writable_scene_dir(robot_xml: Path) -> tuple[Path, Path | None]:
+    """Somewhere to drop the scene wrapper that is beside the robot's assets.
+
+    The wrapper has to sit next to the robot XML, not in a temp dir of its own:
+    <include> resolves relative to the including file, and so does the robot's
+    own `meshdir` -- vr_m3_1.xml declares `meshdir="assets/"`, which MuJoCo reads
+    relative to the top-level model file. Move the wrapper and every mesh goes
+    missing.
+
+    On Kaggle that directory is a symlink into read-only /kaggle/input, so
+    writing there fails with OSError: [Errno 30]. When that happens, mirror the
+    robot directory into a temp dir with one symlink per entry and write the
+    wrapper there instead -- same relative layout, same meshes, but writable.
+
+    Returns the directory to write into, plus the mirror to clean up (or None).
+    """
+    parent = robot_xml.parent
+    if os.access(parent, os.W_OK):
+        return parent, None
+
+    mirror = Path(tempfile.mkdtemp(prefix="render_scene_"))
+    for entry in parent.iterdir():
+        (mirror / entry.name).symlink_to(entry.resolve())
+    return mirror, mirror
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--motion", type=Path, required=True)
@@ -132,12 +160,15 @@ def main() -> int:
 
     root_pos, root_quat, dof, src_fps = load_motion(args.motion)
 
-    scene_xml = args.robot_xml.parent / "_render_scene.xml"
+    scene_dir, mirror = writable_scene_dir(args.robot_xml)
+    scene_xml = scene_dir / "_render_scene.xml"
     scene_xml.write_text(SCENE_TEMPLATE.format(robot_xml=args.robot_xml.name))
     try:
         model = mujoco.MjModel.from_xml_path(str(scene_xml))
     finally:
         scene_xml.unlink(missing_ok=True)
+        if mirror is not None:
+            shutil.rmtree(mirror, ignore_errors=True)
 
     data = mujoco.MjData(model)
     expected = model.nq - 7
