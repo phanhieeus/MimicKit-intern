@@ -168,11 +168,20 @@ phút, không có output — cứ đợi.
     --arg_file args/smp_humanoid_kaggle_args.txt \
     --mode train \
     --num_envs 1024 \
-    --max_samples 60000000 \
+    --max_samples 320000000 \
     --logger wandb \
     --out_dir /kaggle/working/output/smp_spinkick \
     --devices cuda:0 cuda:1
 ```
+
+> **320 M là con số đo được, không phải đoán.** Lần chạy đầu chia hai session (60 M + 350 M) vì chưa
+> biết cần bao nhiêu; nhìn lại thì `Sds_Loss_Mean` đã phẳng ở ~310 M. Ở 13 058 samples/s trên T4 x2,
+> 320 M ≈ **6 h 35 m** — vừa một session, không cần nối. Chi tiết ở
+> [SMP_PLAYBOOK.md §6.1](SMP_PLAYBOOK.md).
+>
+> Chạy dài như vậy thì nên dùng **Save Version → Save & Run All (Commit)** (batch, 12 h) thay vì
+> interactive (9 h, phụ thuộc tab trình duyệt còn mở). Nhớ đính kèm Secrets + dataset và chọn
+> T4 x2 trước khi commit.
 
 Ý nghĩa các flag:
 
@@ -180,21 +189,24 @@ phút, không có output — cứ đợi.
 | --- | --- |
 | `--devices cuda:0 cuda:1` | dùng cả 2 GPU của instance `T4 x2`. `run.py` spawn 1 process/GPU, gradient đồng bộ qua `torch.distributed`; root process (cuda:0) là process duy nhất ghi log/WandB/checkpoint. |
 | `--num_envs 1024` | **tính cho mỗi GPU**, nên 2 GPU = 2048 env song song. Arg gốc để 4096/GPU, không vừa 16 GB của T4. |
-| `--max_samples 60000000` | chặn để run kết thúc trong giới hạn session (9h interactive / 12h batch). Không có nó thì run vô hạn và bị kill giữa chừng. `Samples` đếm gộp cả 2 GPU. |
+| `--max_samples 320000000` | chặn để run kết thúc trong giới hạn session. Không có nó thì run vô hạn và bị kill giữa chừng. `Samples` đếm gộp cả 2 GPU. |
 | `--logger wandb` | metrics (`Test_Return`, `Train_Return`, SDS loss…) stream thẳng lên WandB project `mimickit-smp`. |
 | `--visualize false` | mặc định là `true`, sẽ cố mở cửa sổ GL và crash. |
 | `--save_int_models true` (trong arg file) | lưu checkpoint theo iter vào `int_models/`, để session sau train tiếp. |
 
-> Chỉ chọn được P100 (1 GPU) thì thêm `--devices cuda:0` để ghi đè arg file, và cân nhắc
-> `--num_envs 2048` cho bằng lượng env cũ. Các cell test/playback bên dưới luôn chạy 1 GPU —
-> đó là chủ ý, chúng chỉ roll out 1 env.
+> **Phải là T4 x2, không dùng được P100.** P100 là sm_60, còn PyTorch trong image Kaggle chỉ build
+> cho sm_70+ — nó chết ngay ở phép tensor đầu tiên với `CUDA error: no kernel image is available for
+> execution on the device`. Không phải chuyện chậm hay ít VRAM, là chạy không được. Kiểm ở cell đầu
+> bằng `!nvidia-smi`.
 
 Kết quả nằm ở `/kaggle/working/output/smp_spinkick/`: `model.pt`, `log.txt`, `int_models/`,
 `agent_config.yaml` / `env_config.yaml` / `engine_config.yaml` (bản copy của config đã dùng).
 
-**Train tiếp ở session sau:** thêm `--model_file /kaggle/input/<dataset-checkpoint>/model.pt` (hoặc
-path trong `/kaggle/working` nếu vẫn cùng session). 60M samples trên T4 thường chưa hội tụ hẳn —
-spinkick là clip khó; cứ nối 2–3 session.
+**Bị cắt giữa chừng cũng không mất gì:** `model.pt` được ghi đè mỗi 100 iteration (~8 phút), và
+`--save_int_models true` giữ thêm một bản riêng ở mỗi mốc đó.
+
+**Nếu vẫn muốn nối session** (clip dài hơn spinkick, hoặc muốn thử ngân sách nhỏ trước): thêm
+`--model_file <path>/model.pt`. Lưu ý `--max_samples` đếm lại từ 0 ở session mới, không cộng dồn.
 
 ### (Optional) quay video ngay trong lúc train
 
@@ -439,43 +451,43 @@ nên tỉ số — và reward — đứng yên. Đó là lý do cặp `Sds_Loss_
 
 ## Train bao nhiêu samples là đủ?
 
-Số đo thực tế từ run đầu tiên (`smp_spinkick_humanoid`, 2× T4, `num_envs 1024`/GPU):
+Câu hỏi này **đã có đáp án đo được**, không còn phải đoán. Quỹ đạo thực tế của spinkick trên
+2× T4 (`num_envs 1024`/GPU, 13 058 samples/s):
 
-| | |
-| --- | --- |
-| Tốc độ | **~11.500 samples/s** |
-| 60M samples | 915 iteration, **87 phút** |
-| Ngân sách 1 session Kaggle (9 h) | **~370M samples** |
-| Kết quả sau 60M | `Sds_Loss_Mean` 2.41 → 0.93 (vẫn đang giảm), ep_len 17 → 42 step (**mới 14% của 300**) |
+| Samples tích luỹ | `Sds_Loss_Mean` | `Ep_Len_Frac` | Nhận xét |
+| --- | --- | --- | --- |
+| 60 M | 0.93 | 0.14 | ngã ở mọi episode — **quá ngắn** |
+| 93 M | 0.472 | 0.79 | bước ngoặt, bắt đầu trụ được |
+| 132 M | 0.270 | 0.98 | hết ngã |
+| 204 M | 0.211 | 0.99 | động tác đã ra hình |
+| **309 M** | **0.188** | 0.99 | **hội tụ — dừng ở đây** |
+| 410 M | 0.186 | 0.99 | 100 M samples cho 1 % cải thiện, lãng phí |
 
-Kết luận: **60M samples là quá ngắn cho mimic.** Nó đủ để thấy xu hướng đúng, không đủ để ra động
-tác. Đặt `--max_samples` cho chạy gần hết session:
+Kết luận: **đặt `--max_samples 320000000` và chạy một session duy nhất** — 6 h 35 m, vừa khít
+interactive 9 h và thoải mái trong batch 12 h. Lần đầu chia hai session chỉ vì chưa biết con số này.
+
+60 M là quá ngắn: đủ để thấy xu hướng đúng, không đủ để ra động tác.
+
+**Vẫn nên chia hai session trong hai trường hợp:** (a) robot/motion hoàn toàn mới, chạy 60–100 M
+thăm dò xem config có đúng không rồi mới cam kết cả ngày GPU — sai thì mất 1 h chứ không mất 8 h;
+(b) clip dài hơn spinkick nhiều, ngân sách vượt 12 h.
 
 ```python
-!python mimickit/run.py --arg_file args/smp_humanoid_kaggle_args.txt \
-    --mode train --num_envs 1024 --max_samples 350000000 \
-    --logger wandb --out_dir /kaggle/working/output/smp_spinkick \
-    --devices cuda:0 cuda:1
-```
-
-Nối nhiều session bằng `--model_file`. Checkpoint lấy từ WandB Artifact của session trước
-(Cell 9), hoặc từ notebook output đã Save Version rồi attach làm input:
-
-```python
-# Kéo checkpoint của session trước từ WandB Artifact về
+# Chỉ dùng khi thực sự cần nối. Kéo checkpoint session trước từ WandB Artifact:
 !python kaggle/wandb_upload.py --project mimickit-smp \
     --download smp_spinkick_files:latest --dest /kaggle/working/prev
 
 !python mimickit/run.py --arg_file args/smp_humanoid_kaggle_args.txt \
-    --mode train --num_envs 1024 --max_samples 350000000 \
+    --mode train --num_envs 1024 --max_samples 260000000 \
     --model_file /kaggle/working/prev/model.pt \
     --logger wandb --out_dir /kaggle/working/output/smp_spinkick_s2 \
     --devices cuda:0 cuda:1
 ```
 
-> `--model_file` chỉ nạp trọng số model (actor/critic/normalizer) — bộ đếm `Samples` và optimizer
-> state bắt đầu lại từ 0, nên trên WandB session 2 là một đường cong mới. Muốn nhìn liền mạch thì so
-> `Sds_Loss_Mean` giữa các run, đừng so theo trục `Samples`.
+> `--model_file` chỉ nạp trọng số model (actor/critic/normalizer). Bộ đếm `Samples` và optimizer
+> state bắt đầu lại từ 0, nên `--max_samples` của session 2 là **ngân sách riêng của nó**, không
+> phải tổng — muốn tổng 320 M sau khi đã chạy 60 M thì đặt 260 M. Trên WandB đây là một đường cong
+> mới; so `Sds_Loss_Mean` giữa các run, đừng so theo trục `Samples`.
 
 ---
 

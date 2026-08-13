@@ -28,7 +28,8 @@ Hai session nối tiếp nhau, session sau load checkpoint của session trướ
 | `Timeout_Frac` | ~0 | **0.94** |
 | `Critic_Loss` | 0.06 → 0.66 | 0.85 → **0.098** |
 
-**Tổng chi phí đến khi thành công: ~410 M samples, ~9 giờ trên 2× T4.**
+**Tổng chi phí thực tế: 410 M samples, ~9 giờ trên 2× T4** — nhưng 100 M cuối là thừa. Lần sau đặt
+**320 M và chạy một session duy nhất** (~6 h 35 m); xem [§6.1](#61-gọn-trong-một-session--cách-nên-làm).
 
 Bước ngoặt xảy ra ở khoảng iteration 400–600 của session 2 (tức ~90 M samples tích luỹ):
 `Fail_Frac` rơi từ 1.0 xuống 0.22, `Ep_Len_Frac` nhảy từ 0.18 lên 0.79. Trước mốc đó robot ngã ở
@@ -211,16 +212,80 @@ thì vấn đề nằm ở prior, ở reward scale, hoặc ở chính clip — k
 |---|---|
 | Prior TinyMDM, 50 k iter | 1 GPU, vài chục phút cho clip đơn |
 | Policy tới khi hết ngã | ~90 M samples |
-| Policy tới khi hội tụ | ~410 M samples ≈ 9 h trên 2× T4 |
+| Policy tới khi hội tụ | ~310 M samples ≈ 6 h 35 m trên 2× T4 (xem §6.1) |
 | Rollout + render 3 video | ~2–3 phút |
 
 Throughput thực đo: **13 058 samples/s** với `--num_envs 1024 --devices cuda:0 cuda:1`
-(1024 là **mỗi GPU**, tổng 2048 env). Kaggle giới hạn 9 h interactive / 12 h batch, nên một lần
-hội tụ vừa khít một session — hoặc chia hai session và nối bằng `--model_file`.
+(1024 là **mỗi GPU**, tổng 2048 env). Kaggle giới hạn 9 h interactive / 12 h batch.
 
-Nối session: upload `model.pt` lên WandB Artifact ở cuối session, session sau kéo về bằng
+### 6.1 Gọn trong MỘT session — cách nên làm
+
+Lần đầu chạy hai session vì không biết cần bao nhiêu. Giờ đã biết, nên **không cần chia nữa**.
+
+Con số 410 M ở trên là tổng cộng thực tế, nhưng nó **thừa**. Nhìn lại quỹ đạo `Sds_Loss_Mean`:
+
+| Samples tích luỹ | `Sds_Loss_Mean` |
+|---|---|
+| 60 M (hết session 1) | 0.93 |
+| 132 M | 0.270 |
+| 204 M | 0.211 |
+| **309 M** | **0.188** |
+| 410 M (hết session 2) | 0.186 |
+
+100 M samples cuối chỉ đổi được 0.002 — khoảng 2 giờ GPU cho 1 % cải thiện. **Điểm hội tụ thực tế
+là ~310 M**, tức **6 h 35 m** ở throughput đo được.
+
+```
+--max_samples 320000000
+```
+
+Cộng setup ~5 phút, prior (nếu phải train) ~30–40 phút, render video ~3 phút:
+
+| Kịch bản | Tổng thời gian | Chạy được ở đâu |
+|---|---|---|
+| Prior có sẵn (humanoid/spinkick) | **~6 h 45 m** | interactive (9 h) hoặc batch |
+| Phải train prior (robot mới, ví dụ M3.1) | **~7 h 30 m** | interactive vẫn kịp, batch an tâm hơn |
+| Muốn dư dả, để `--max_samples 400000000` | ~8 h 40 m | **chỉ batch** (12 h) |
+
+**Dùng batch mode cho chắc.** Interactive 9 h nghe thì đủ, nhưng nó phụ thuộc tab trình duyệt còn
+mở; mất mạng giữa chừng là mất session. Save Version → **Save & Run All (Commit)** chạy headless tới
+12 h, `/kaggle/working` được giữ nguyên thành Output của version đó. Nhớ đính kèm cả Secrets lẫn
+dataset data pack cho version, và chọn accelerator T4 x2 **trước khi** commit.
+
+**Bị cắt giữa chừng vẫn không mất gì.** `base_agent.py:456` ghi đè `model.pt` mỗi
+`iters_per_output` = 100 iteration, tức mỗi ~6.5 M samples ≈ **8 phút**. Thêm
+`--save_int_models true` thì mỗi mốc đó còn được giữ lại một bản riêng trong `int_models/`
+(27 MB × ~49 bản ≈ 1.3 GB, thoải mái trong hạn 20 GB của `/kaggle/working`). Session chết ở phút
+thứ 400 thì bạn vẫn có checkpoint của phút 392.
+
+Chạy một session thì **bỏ hẳn** hai cell nối session: không cần
+`wandb_upload.py --download` ở đầu, không cần `--model_file`. Thứ tự cell rút gọn còn:
+
+```
+secrets → clone → setup.sh → prepare_data.py → [train prior] → smoke test
+        → train policy (--max_samples 320000000) → make_videos.py → upload model.pt
+```
+
+### 6.2 Khi nào vẫn nên chia hai session
+
+- **Robot/motion hoàn toàn mới, chưa biết ngân sách.** Chạy 60–100 M trước, xem `Sds_Loss_Mean` và
+  `Ep_Len_Frac` có đi đúng hướng không rồi mới cam kết cả ngày GPU. Sai config thì mất 1 h chứ không
+  mất 8 h.
+- **Clip dài.** Zombie 1098 frame nhiều khả năng cần hơn 310 M; nếu vượt ~560 M thì 12 h batch cũng
+  không đủ và buộc phải nối.
+
+Cách nối: upload `model.pt` lên WandB Artifact ở cuối session, session sau kéo về bằng
 `kaggle/wandb_upload.py --download <artifact>:latest --dest <dir>` rồi
 `--model_file <dir>/model.pt`. Đặt `WANDB_NAME` khác nhau cho mỗi session để dễ đối chiếu.
+
+Lưu ý khi nối: `--max_samples` **đếm lại từ 0** ở session mới, không cộng dồn. `_sample_count` là
+biến python thường (`base_agent.py:34`), không nằm trong state dict, nên `load()` không khôi phục nó.
+Muốn tổng 320 M qua hai session thì đặt `--max_samples` cho từng session, không phải cho tổng.
+
+Hệ quả phụ: `normalizer_samples: 100000000` cũng tính lại từ đầu, tức obs normalizer tiếp tục cập
+nhật thêm 100 M samples nữa ở session sau. Vô hại, nhưng nhớ là vậy khi so hai đường cong.
+Ngược lại, trọng số của `DiffNormalizer` (`_mean_abs`, `_count`) **được** khôi phục — chúng khai báo
+là `nn.Parameter` (`diff_normalizer.py:66-67`) nên nằm trong checkpoint.
 
 ---
 
@@ -334,5 +399,5 @@ Việc còn lại cho M3.1:
 
 Khác biệt đáng lưu ý so với humanoid: clip zombie dài 1098 frame (~18 s ở 60 fps), trong khi spinkick
 chỉ ~78 frame (~1.3 s). Clip dài gấp 14 lần nghĩa là phân phối chuyển động rộng hơn nhiều, prior khó
-hơn — nhiều khả năng cần hơn 410 M samples. Theo dõi `Sds_Loss_Mean` để quyết định dừng, đừng áp
+hơn — nhiều khả năng cần hơn 310 M samples. Theo dõi `Sds_Loss_Mean` để quyết định dừng, đừng áp
 cứng con số của humanoid.
