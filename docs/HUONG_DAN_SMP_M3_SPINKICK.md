@@ -85,16 +85,25 @@ os.chdir(REPO)
 
 ```python
 # Cell 4 — data: pack gốc + dataset M3.1
-M3_SLUG = "phnvnh/mimickit-vr-m3-1"     # sửa thành slug thật của bạn
+import os, subprocess
 
-!python kaggle/prepare_data.py
-!python kaggle/prepare_data.py --src /kaggle/input/{M3_SLUG.split('/')[-1]}
-!ls data/assets/vr_m3_1/ && ls data/motions/vr_m3_1/
+for name in sorted(os.listdir("/kaggle/input")):
+    path = os.path.join("/kaggle/input", name)
+    print("=== {} ===".format(path))
+    subprocess.run(["python", "kaggle/prepare_data.py", "--input_root", path])
+
+!ls data/assets/vr_m3_1/ && ls data/motions/vr_m3_1/ && ls data/motions/ | head
 ```
 
-Phải thấy `vr_m3_1.xml`, thư mục `assets/`, và `vr_m3_1_humanoid_spinkick.pkl`. Gọi
-`prepare_data.py` hai lần là cần thiết — `find_source()` trả về pack đầu tiên rồi dừng, còn
-`link_tree()` merge và bỏ qua thứ đã có, nên lần hai chỉ thêm `vr_m3_1`.
+Phải thấy `vr_m3_1.xml`, thư mục `assets/`, `vr_m3_1_humanoid_spinkick.pkl`, và cả các robot của
+pack gốc (`humanoid`, `g1`, `go2`…).
+
+**Vì sao lặp qua từng dataset thay vì gọi hai lần cố định:** `find_source()` duyệt BFS từ
+`--input_root` và trả về **pack đầu tiên** tìm thấy rồi dừng. Gọi `prepare_data.py` trần với
+`/kaggle/input` chứa hai dataset thì nó chỉ link được một, và không có gì đảm bảo đó là cái nào —
+thứ tự phụ thuộc tên thư mục. Ghim `--input_root` vào từng dataset một thì mỗi cái được xử lý đúng
+một lần. `link_tree()` merge đệ quy và bỏ qua entry đã tồn tại nên gọi nhiều lần là an toàn; dataset
+nào không phải data pack chỉ in ERROR rồi bỏ qua.
 
 ```python
 # Cell 5 — train prior TinyMDM (~30-40 phút, 1 GPU)
