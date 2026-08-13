@@ -11,12 +11,20 @@ Both metrics were honest about what they measure, and both were useless here:
 
 * Ep_Len_Frac measures not falling. Standing still does not fall.
 * Sds_Loss scores 10-step (0.333 s) windows independently, with nothing tying
-  them into a whole. A third of the clip's windows come from its wind-up and
-  recovery, where little happens, so "stand and jitter" is a genuine
-  high-reward mode of the prior -- and a far safer one than kicking.
+  them into a whole, so a motion whose every window is locally plausible can
+  still never assemble into the clip.
 
-So the failure is invisible from training curves by construction, and something
-has to look at the rollout itself. That is this script.
+Why the M3.1 policy scored so well is not settled. The obvious explanation --
+that the clip's calm stretches gave the prior a low-motion mode to hide in --
+is wrong: sampling the trained prior shows it generates windows as dynamic as
+the clip's (mean joint speed 4.24 against 4.73 rad/s) and covers the whole
+motion including the kick apex. The clip has no near-static window at all; its
+slowest is 3.06 rad/s. So standing still ought to score badly, and something
+else is going on. Settling it needs the rollout measured in joint space rather
+than guessed at from a video, which is the other reason this script exists.
+
+Either way the failure is invisible from the training curves by construction,
+and something has to look at the rollout itself.
 
     python tools/motion_quality.py \
         --policy    output/smp_m3_spinkick/playback/policy.pkl \
@@ -85,9 +93,9 @@ def periodicity(signal, period_frames):
 
     The two numbers separate the failure modes. Strength near zero means nothing
     repeats at all. Strength high with tempo far from 1.0 means the motion is
-    perfectly rhythmic at the wrong rate -- the collapse signature, since the
-    cheapest cycle to find sits just above the reward's 0.333 s window, where
-    the reward cannot see it.
+    perfectly rhythmic at the wrong rate, which is what the M3.1 rollout does:
+    roughly 0.4 s against a 1.28 s clip, just above the reward's 0.333 s window
+    and so invisible to it.
     """
     x = signal - signal.mean()
     if x.std() < 1e-9 or len(x) < 4:
