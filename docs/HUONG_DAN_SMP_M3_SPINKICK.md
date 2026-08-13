@@ -199,15 +199,19 @@ policy dở. Sửa trước khi chạy full.
 
 ```python
 # Cell 8a — watchdog: đẩy checkpoint lên WandB mỗi 20 phút
-import subprocess
+import subprocess, sys, time
 wd = subprocess.Popen([
-    "python", "kaggle/checkpoint_watchdog.py",
+    sys.executable, "kaggle/checkpoint_watchdog.py",
     "--model_file", "/kaggle/working/output/smp_m3_spinkick_slow2/model.pt",
     "--project", "mimickit-smp",
     "--run_name", "smp_m3_spinkick_slow2_ckpt",
     "--interval", "1200",
 ])
-print("watchdog pid", wd.pid)
+time.sleep(20)
+assert wd.poll() is None, (
+    "watchdog died at startup -- rc={}. Fix it before training: a silent watchdog "
+    "means no checkpoint protection at all.".format(wd.returncode))
+print("watchdog alive, pid", wd.pid)
 ```
 
 Cell này bảo hiểm cho tình huống hết giờ. `/kaggle/working` chỉ thành Output khi notebook kết thúc
@@ -230,13 +234,23 @@ Mất session vẫn lấy lại được:
     --max_samples 30000000
 ```
 
-**Chạy 30 M trước, đừng đặt thẳng con số lớn.** Baseline clip gốc tại 30 M là `Ep_Len_Frac` **0.10**.
-Nếu bản giãn vượt **0.30** thì giả thuyết nhịp đúng, lúc đó mới chạy full; dưới 0.15 thì nhịp không
-phải nút thắt và tiền GPU nên để dành. Bảng đọc kết quả đầy đủ ở mục
-[Clip gốc bất khả thi về động lực học](#clip-gốc-bất-khả-thi-về-động-lực-học--đọc-phần-này-trước-khi-train).
+**Cell này chỉ có hai dòng, và đó là cố ý.** Mọi tham số khác nằm trong arg file. Cell cũ liệt kê
+lại `--mode`, `--num_envs`, `--logger`, `--devices`, `--out_dir` — thừa, và một lần sửa nó đã để sót
+dấu `\` nối ở dòng áp chót khiến cả session batch chết bởi `IndentationError: unexpected indent` sau
+47 phút chờ prior. Càng ít dòng càng ít chỗ hỏng.
 
-Mọi tham số còn lại nằm trong arg file (1024 env, hai GPU, `--save_int_models true`,
-`--out_dir /kaggle/working/output/smp_m3_spinkick_slow2`), nên không cần lặp lại trên dòng lệnh.
+**Chạy 30 M trước, đừng đặt thẳng con số lớn.** Và **đừng dùng `Ep_Len_Frac` làm tiêu chí** — run
+clip gốc kết thúc ở 0.827 mà robot không đá lần nào. Tiêu chí đúng là `Quality/Coverage` từ
+`motion_quality.py`, Cell 9 tự chấm và đẩy lên WandB:
+
+| `Quality/Coverage` @ 30 M | kết luận |
+|---|---|
+| **< 0.55** | giãn clip có tác dụng — chạy full |
+| 0.55 – 0.75 | có cải thiện nhưng chưa đủ, thử 2.5× |
+| > 0.75 | vẫn collapse — nhịp không phải nút thắt, chuyển sang `num_disc_obs_steps` 10 → 30 |
+
+Đối chiếu: run clip gốc 320 M cho coverage ước tính > 0.9 (đo gián tiếp qua video; số chính xác cần
+chấm lại rollout).
 
 **Chưa có con số `--max_samples` cho lần chạy full**, và đừng chép 200 M từ bản trước của tài liệu
 này — nó là ngoại suy sai từ bốn mốc đầu. Chốt sau khi có kết quả 30 M.
@@ -310,18 +324,29 @@ So tại thời điểm humanoid *đã giải xong* thăng bằng:
 | `Ep_Len_Frac` | **0.965** | 0.628 |
 | `Sds_Loss_Mean` | 0.321 | **0.260** |
 
-M3.1 bám tư thế **tốt hơn** humanoid mà vẫn ngã. Mạng biết phải làm gì; nó chỉ luôn trễ nhịp, và trễ
-nhịp lúc trụ một chân thì đổ. Thêm sample không mua được thứ actuator không có.
+M3.1 bám tư thế **tốt hơn** humanoid mà vẫn ngã.
 
-Diễn biến của chính run đó nói rõ hai mục tiêu tách nhau từ 140 M:
+### Kết cục thật của run này: mode collapse
 
-```
-iter 1200    78.6 M   EpLen 0.366   Sds 0.3008
-iter 2100   137.6 M   EpLen 0.481   Sds 0.2582   <- Sds chạm đáy
-iter 3300   216.3 M   EpLen 0.628   Sds 0.2597   <- 80 M sau, y nguyên
-```
+Run chạy trọn 319.9 M / 9.94 h và kết thúc ở `Ep_Len_Frac` **0.827**, `Sds_Loss` **0.1696** — nhìn số
+thì bắt chước giỏi hơn cả humanoid (0.186). **Video cho thấy robot trụ một chân, rung tại chỗ, không
+đá lần nào trong 10 giây.**
 
-Từ 140 M trở đi không còn học chất lượng động tác, chỉ mua thêm thăng bằng — với giá rất đắt.
+| đo trên video | clip gốc | humanoid | M3.1 |
+|---|---|---|---|
+| Biên độ chuyển động | 4.85 | 3.86 | **1.72** |
+| Độ bùng nổ (std/mean) | — | 0.381 | **0.042** |
+| Tự tương quan tại chu kỳ clip | — | **+0.786** | **−0.385** |
+| Chu kỳ mạnh nhất | — | 1.27 s | 0.40 s |
+
+Cú "bứt tốc" ở 275 M (`Sds_Loss` 0.26 → 0.17 kèm `Ep_Len_Frac` 0.67 → 0.83) chính là lúc policy tìm
+ra lối tắt, không phải lúc nó học được. **Hai chỉ số cùng nhảy là dấu hiệu phải render kiểm.**
+
+**Prior không phải thủ phạm** — samples do chính prior sinh ra có tốc độ 4.24 rad/s so với 4.73 của
+clip và phủ trọn động tác (coverage 0.03). Clip cũng không có cửa sổ tĩnh nào để trốn vào (chậm nhất
+3.06 rad/s). Nguyên nhân collapse **vẫn đang mở**, cần chấm `policy.pkl` ở không gian khớp.
+
+Vì vậy phần dưới đây là **giả thuyết đang chờ kiểm**, không phải kết luận.
 
 ### Cách xử lý: giãn clip, không đụng robot
 

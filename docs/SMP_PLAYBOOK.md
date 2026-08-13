@@ -197,8 +197,31 @@ Dấu hiệu nhận ra khi đã lỡ train: **`Sds_Loss` tốt mà vẫn ngã.**
 | `Ep_Len_Frac` | **0.965** | 0.628 |
 | `Sds_Loss_Mean` | 0.321 | **0.260** |
 
-M3.1 bám tư thế tốt hơn humanoid mà vẫn đổ, vì nó luôn trễ nhịp và trễ nhịp lúc trụ một chân thì ngã.
-Bài toán không nằm ở imitation, và thêm sample không mua được thứ actuator không có.
+M3.1 bám tư thế tốt hơn humanoid mà vẫn đổ.
+
+**Giới hạn của kết luận này — đọc kỹ.** Bảng mô-men là phép đo, nhưng "clip bất khả thi nên train
+thêm vô ích" là **suy luận, và nó đã bị bác một phần**: chạy tiếp tới 320 M thì `Ep_Len_Frac` lên
+0.827 và `Sds_Loss` xuống 0.1696. Chỉ có điều video cho thấy đó là mode collapse chứ không phải học
+được (§5). Hai điều còn chưa biết:
+
+- `I_eff` trong bảng là **cận trên** — tính theo quán tính hợp thành thân cố định. Khi robot ở trên
+  không, quán tính hiệu dụng thấp hơn, nên mô-men thật cần ít hơn con số in ra.
+- Chưa có thí nghiệm nào chứng minh giãn clip **sửa được** collapse. Đó là giả thuyết đang chờ kiểm.
+
+Nên dùng `--report` như một **cảnh báo** ("clip này đòi hỏi vượt phần cứng, hãy nghi ngờ"), đừng dùng
+như một phán quyết.
+
+**Prior thì đã được loại trừ.** `train_tinymdm.py` ghi `samples/` gồm motion do chính prior sinh ra;
+`prior_cache.py` đính kèm chúng vào artifact. Với M3.1 spinkick, đo trên các cửa sổ 10 khung:
+
+| tốc độ khớp mỗi cửa sổ (rad/s) | min | med | max | mean |
+|---|---|---|---|---|
+| Clip gốc, 30 cửa sổ | 3.06 | 4.94 | 5.65 | 4.73 |
+| Prior tự sinh, 16 mẫu | 0.65 | 4.68 | 5.63 | **4.24** |
+
+Pose coverage của prior lên clip là **0.03** — nó với tới trọn động tác kể cả đỉnh cú đá. Prior tốt.
+Và clip **không có cửa sổ tĩnh nào** (chậm nhất 3.06 rad/s), nên giả thuyết "policy trốn vào phần
+tĩnh của prior" cũng sai. Nguyên nhân collapse vẫn đang mở.
 
 **Cách sửa: giãn clip, đừng đụng gains.** τ tỉ lệ `1/s²` nên `s = sqrt(vượt)`:
 
@@ -271,12 +294,51 @@ iter 3300   216.3 M   Sds 0.2597   <- 80 M sau, không nhúc nhích
 `Ep_Len_Frac` vẫn bò lên trong 80 M đó, nên nhìn qua tưởng còn tiến bộ. Thực chất policy đã ngừng
 học bắt chước từ 140 M và chỉ còn mua thêm thăng bằng.
 
-### Tin được
+### Không metric train nào phát hiện được mode collapse — bắt buộc chấm rollout
+
+Đọc mục này trước bảng bên dưới, nếu không bảng đó sẽ đánh lừa bạn đúng như nó đã đánh lừa tôi.
+
+Run M3.1 spinkick kết thúc ở **`Ep_Len_Frac` 0.827** và **`Sds_Loss` 0.1696** — sai số bắt chước
+*thấp hơn* mức hội tụ 0.186 của humanoid. Video cho thấy robot trụ một chân, rung tại chỗ, **không
+bao giờ hoàn thành một cú đá nào** trong suốt 10 giây.
+
+Cả hai chỉ số đều trung thực với thứ chúng đo, và cả hai đều vô dụng ở đây:
+
+- `Ep_Len_Frac` đo việc không ngã. Đứng yên thì không ngã.
+- `Sds_Loss` chấm từng cửa sổ 0.333 s **độc lập**, không có gì buộc chúng ghép thành một tổng thể.
+
+Nên **hỏng kiểu này vô hình với đường cong train, về mặt cấu trúc**. Phải có thứ nhìn vào rollout:
+
+```bash
+python tools/motion_quality.py \
+    --policy    <out_dir>/playback_final/policy.pkl \
+    --reference <clip>.pkl
+```
+
+`kaggle/make_videos.py` gọi nó tự động sau khi upload và đẩy `Quality/*` lên WandB. Ngưỡng:
+
+| | đạt | ý nghĩa |
+|---|---|---|
+| **`Quality/Coverage`** | **< 0.55** | **chỉ số quyết định** — bao nhiêu phần động tác gốc thực sự được ghé qua |
+| `Quality/Tempo` | 0.7 – 1.3× | chu kỳ có đúng nhịp clip không |
+| `Quality/Speed_Amplitude` | > 0.5 | có đủ nhanh không |
+| `Quality/Fidelity` | thấp | tư thế có hợp lệ không — **một mình nó vô nghĩa** |
+
+Coverage là chỉ số quyết định vì mode collapse để lại dấu vân tay không chỉ số vô hướng nào bắt được
+nhưng cặp fidelity/coverage thì có: **tư thế nó tạo ra hoàn toàn hợp lệ trong khi phần lớn động tác
+không bao giờ được ghé qua**. Một policy đứng yên đạt fidelity hoàn hảo. Đo trên rollout tổng hợp:
+policy trung thực cho coverage 0.05, policy giữ-một-tư-thế cho 0.91.
+
+Dấu hiệu trên đường cong đáng ngờ nhất: **`Sds_Loss` rơi mạnh cùng lúc `Ep_Len_Frac` tăng mạnh.**
+Đó là lúc render kiểm, không phải lúc ăn mừng. Ở run M3.1 điều này xảy ra tại 275 M và tôi đã đọc
+nhầm thành bứt phá.
+
+### Tin được — nhưng chỉ khi đã qua bài kiểm rollout ở trên
 
 | Metric | Nghĩa | Đích |
 |---|---|---|
-| `Sds_Loss_Mean` | Khoảng cách thô tới prior. **Thước đo tiến bộ chính.** | giảm đơn điệu rồi phẳng |
-| `Ep_Len_Frac` | Độ dài episode / trần. Đo trực tiếp "có trụ được không". | > 0.9 |
+| `Sds_Loss_Mean` | Khoảng cách thô tới prior. Thước đo tiến bộ chính, **không phải thước đo thành công**. | giảm đơn điệu rồi phẳng |
+| `Ep_Len_Frac` | Độ dài episode / trần. Đo "có trụ được không", **không đo "có làm đúng động tác không"**. | > 0.9 |
 | `Timeout_Frac` | Tỉ lệ episode kết thúc do hết giờ thay vì ngã. | > 0.9 |
 | `Fail_Frac` | Tỉ lệ ngã. Nhiễu khi số termination mỗi iter nhỏ. | gần 0 |
 | `Test_Episode_Length` | Chạy ở chế độ deterministic. | = trần (300) |
@@ -295,8 +357,13 @@ thì vấn đề nằm ở prior, ở reward scale, hoặc ở chính clip — k
 
 **Trường hợp nguy hiểm: `Sds_Loss_Mean` phẳng trong khi `Ep_Len_Frac` vẫn tăng.** Đây không phải hội
 tụ, mà là hai mục tiêu đã tách nhau — policy ngừng học bắt chước và chỉ còn học không ngã. M3.1 chạy
-80 M sample trong trạng thái này. Dừng lại và hỏi tại sao nó không bắt chước tốt hơn được nữa; câu
-trả lời thường là clip đòi hỏi thứ robot không làm nổi (§4.1), chứ không phải cần thêm sample.
+80 M sample trong trạng thái này (137 M → 216 M, `Sds_Loss` 0.2582 → 0.2597).
+
+**Và trường hợp còn nguy hiểm hơn: cả hai cùng cải thiện đột ngột.** Cũng ở run đó, tại 275 M
+`Sds_Loss` rơi 0.26 → 0.17 trong khi `Ep_Len_Frac` nhảy 0.67 → 0.83. Nhìn như bứt phá. Thực tế là
+policy vừa tìm ra lối tắt: ngừng cố đá nên ngừng ngã, và cửa sổ 0.333 s của chuyển động thay thế lại
+khớp rất tốt với prior. Không có cách nào phân biệt hai kịch bản từ đường cong — **render và chấm
+bằng `motion_quality.py`**.
 
 ---
 
@@ -499,8 +566,20 @@ offline sau.
 7. `contact_bodies` có phù hợp với motion không? Clip gốc có tự vi phạm nó không?
 8. `motion_file` trong env config và trong prior config có **trùng nhau** không?
 9. `smp_prior_model` có trỏ đúng file `.pt` mà bước [1] vừa sinh không?
-10. Smoke test 2 phút (`--max_samples 200000`) trước khi chạy full.
-11. `WANDB_NAME` đã đặt riêng cho session này chưa?
+10. Cell train có còn dấu `\` nối đúng ở mọi dòng trừ dòng cuối không? Thiếu một dấu là
+    `IndentationError` và cả session batch hỏng — đã mất một lần vì lỗi này.
+11. Watchdog có **thật sự sống** không? `wd.poll()` phải là `None` sau vài giây. Nó đã từng chết ngay
+    lúc khởi động (`Fatal Python error: init_import_site`) mà chỉ in ra một dòng pid trông bình thường.
+12. Smoke test 2 phút (`--max_samples 200000`) trước khi chạy full.
+13. `WANDB_NAME` đã đặt riêng cho session này chưa?
+
+## 9.1 Checklist SAU khi train xong
+
+Train xong không có nghĩa là thành công. Chưa chấm rollout thì chưa biết gì.
+
+1. `Quality/Coverage` < 0.55? Nếu không thì đó là mode collapse, bất kể `Ep_Len_Frac` đẹp cỡ nào (§5).
+2. `Quality/Tempo` trong khoảng 0.7–1.3×?
+3. Đã **xem** `policy_final.mp4` chưa? Robot có làm đúng động tác không, hay chỉ đứng vững?
 
 ---
 
@@ -508,33 +587,57 @@ offline sau.
 
 Hướng dẫn từng cell: [HUONG_DAN_SMP_M3_SPINKICK.md](HUONG_DAN_SMP_M3_SPINKICK.md).
 
-**Đã xong.** Toàn bộ cấu hình spinkick đã commit và đã chạy thật:
+### Hạ tầng: xong và đã chạy thật
 
-```
-data/envs/smp_vr_m3_1_spinkick_env.yaml          data/envs/smp_vr_m3_1_spinkick_slow2_env.yaml
-data/agents/smp_vr_m3_1_spinkick_agent.yaml      data/agents/smp_vr_m3_1_spinkick_slow2_agent.yaml
-args/smp_vr_m3_1_spinkick_kaggle_args.txt        args/smp_vr_m3_1_spinkick_slow2_kaggle_args.txt
-tools/diffusion_model/config/tinymdm_vr_m3_1_spinkick.yaml    (+ bản _slow2)
-kaggle/make_m3_dataset.sh                        kaggle/checkpoint_watchdog.py
-tools/retime_motion.py
-```
+Cấu hình, dataset, prior, train, render, upload — thông suốt từ đầu tới cuối. Bốn lỗi hạ tầng đã trả
+giá và đã vá: `os.chdir` trước `rmtree`, thư mục chỉ đọc khi ghi clip, scene XML ghi vào cây asset,
+và prior bắt buộc phải tồn tại kể cả khi chỉ render.
 
-Cấu hình đúng, hạ tầng chạy được, prior train được, pipeline thông từ đầu tới video.
+### Kết quả spinkick clip gốc: HỎNG, và hỏng theo kiểu metric không thấy
 
-**Kết quả clip gốc: không hội tụ, và đã biết vì sao.** Run 216 M sample dừng ở `Ep_Len_Frac` 0.628
-với `Sds_Loss` phẳng từ 137 M. Nguyên nhân là clip retarget đòi mô-men vượt giới hạn actuator ở
-13/27 khớp (§4.1) — không phải lỗi cấu hình, không phải thiếu sample. **Đừng chạy lại clip gốc với
-`--max_samples` cao hơn.**
+Run `wjw4wwo3` chạy trọn 319.9 M sample / 9.94 h, kết thúc sạch:
 
-**Việc tiếp theo:** thí nghiệm sàng lọc 30 M với clip giãn 2.0× (`*_slow2`), ~1 h 15 m GPU kể cả
-prior. Baseline để so là `Ep_Len_Frac` **0.10 tại 30 M**; trên 0.30 thì chạy full, dưới 0.15 thì nhịp
-không phải nút thắt.
+| | Humanoid (`m6rv7ht3`) | M3.1 (`wjw4wwo3`) |
+|---|---|---|
+| `Ep_Len_Frac` | 0.994 | 0.827 |
+| `Sds_Loss_Mean` | 0.186 | **0.1696** |
+| Test episode | 300 / 300 | 252.9 / 300 |
 
-**Nếu 2.0× không đủ:** phương án còn lại là nâng damping gối (kd 10 → 25, đưa ζ từ 0.64 lên ~1.6).
-Đây là chỉnh tham số điều khiển của phần cứng thật, **phải được đội robot duyệt** và phải đồng bộ
-ngược về `vr_m3_1_constants.py`, nếu không policy sẽ không transfer. Bảng mô-men ở §4.1 là lý lẽ bằng
-số để mở cuộc trao đổi đó.
+Nhìn số thì M3.1 bắt chước tốt hơn humanoid. **Video cho thấy nó trụ một chân, rung tại chỗ, không
+đá lần nào.** Đo trên video: biên độ chuyển động 1.72 so với 4.85 của clip, độ bùng nổ 0.042 so với
+0.381 của humanoid, chu kỳ mạnh nhất 0.40 s trong khi clip dài 1.28 s, tự tương quan tại chu kỳ clip
+là **âm** (−0.385). Humanoid thì +0.786 tại đúng chu kỳ.
 
-**Motion tiếp theo (zombie):** clip dài 1098 frame (~18 s) so với spinkick 78 frame (~1.3 s). Phân
-phối chuyển động rộng hơn nhiều nên prior khó hơn. Chạy `retime_motion.py --report` trước tiên —
-zombie chậm hơn spinkick nhiều nên nhiều khả năng khả thi sẵn, nhưng đừng đoán.
+Đây là lý do §5 tồn tại và là lý do có `tools/motion_quality.py`.
+
+### Đã loại trừ được gì
+
+**Prior tốt** — samples do chính nó sinh ra có tốc độ trung bình 4.24 rad/s so với 4.73 của clip, và
+phủ trọn động tác (coverage 0.03) kể cả đỉnh cú đá.
+
+**Giả thuyết "trốn vào phần tĩnh của prior" sai** — clip không có cửa sổ tĩnh nào, chậm nhất 3.06 rad/s.
+
+**Nguyên nhân collapse vẫn chưa biết.** Cần `policy.pkl` đo ở không gian khớp; suy từ pixel video đã
+hết khả năng. Ba khả năng còn lại: policy động hơn video gợi ý; `Sds_Loss` thấp không đồng nghĩa
+"giống prior"; hoặc do `disc_dof_vel_obs: False` nên tốc độ khớp chỉ vào reward gián tiếp.
+
+### Hai câu hỏi mở, một session trả lời được cả hai
+
+1. **Giãn clip 2.0× có sửa được không?** Config `*_slow2` đã sẵn sàng, prior slow2 đã train và cache.
+   Chưa chạy được RL vì session batch chết bởi `IndentationError` ở cell train.
+2. **Nguyên nhân mode collapse là gì?** Cần chấm rollout của model 320 M đã có trên WandB
+   (`smp_m3_spinkick_files:latest`).
+
+Chạy câu 2 trước — nó dùng weights sẵn có, tốn ~10 phút, và trả lời được kể cả khi hết quota giữa
+chừng. Sau đó mới tới câu 1 (~40 phút).
+
+### Nếu slow2 không sửa được
+
+Theo thứ tự: **nâng `num_disc_obs_steps` 10 → 30** (cửa sổ 1.0 s, gần trọn cú đá — chu kỳ 0.4 s
+không còn lọt qua được; phải train lại prior), rồi mới tới **nâng damping gối kd 10 → 25**, thứ phải
+được đội phần cứng duyệt và đồng bộ ngược về `vr_m3_1_constants.py`.
+
+### Motion tiếp theo (zombie)
+
+Clip 1098 khung (~18 s) so với spinkick 78 khung. Chạy `retime_motion.py --report` trước tiên; zombie
+chậm hơn nhiều nên nhiều khả năng khả thi sẵn, nhưng đừng đoán.
