@@ -76,10 +76,19 @@ clip motion (.pkl)  ──►  [0] kiểm khả thi (5 giây, §4.1)
 retarget khớp tư thế mà không biết gì về giới hạn actuator. Bỏ qua bước này đã tốn 216 M sample một
 lần rồi. Chi tiết ở §4.1.
 
-**[1] Prior** — `tools/diffusion_model/train_tinymdm.py --cfg_path <cfg> --out_dir <dir>`.
+**[1] Prior** — `kaggle/prior_cache.py --cfg_path <cfg> --out_dir <dir> --project <proj>`.
 Mô hình khuếch tán DiT nhỏ (2 layer, 4 head) học phân phối các đoạn chuyển động 10 bước từ clip.
-50 000 iteration, **chạy một GPU duy nhất** — script là vòng lặp một tiến trình, không có
-`torch.distributed`, nên GPU thứ hai nằm không ở giai đoạn này.
+50 000 iteration, **chạy một GPU duy nhất** — `train_tinymdm.py` bên dưới là vòng lặp một tiến trình,
+không có `torch.distributed`, nên GPU thứ hai nằm không ở giai đoạn này.
+
+**Luôn gọi qua `prior_cache.py`, đừng gọi thẳng `train_tinymdm.py`.** Prior **chính là** hàm reward
+(`exp(-sds_loss × scale)` đo bằng nó), nên hai run tự train prior riêng là hai run **không so được
+với nhau** — kể cả cùng config, cùng clip, cùng robot. Hai run M3.1 đã dính đúng chuyện này: tại cùng
+131.1 M sample một cái đạt `Ep_Len_Frac` 0.470, cái kia 0.288.
+
+`prior_cache.py` publish prior thành artifact WandB rồi tái sử dụng ở mọi session sau (lần đầu
+~35 phút, sau đó ~10 giây), chạy watchdog trong lúc train để session chết giữa chừng không mất sạch,
+và gắn fingerprint băm từ config + clip để prior cũ không bị dùng nhầm sau khi bạn sửa clip.
 
 **[2] Policy** — `mimickit/run.py`. Reward = `exp(-sds_loss_norm × sds_loss_scale)`, tức
 "đoạn chuyển động vừa sinh ra có giống thứ prior đã học không". Không có task reward
@@ -481,16 +490,17 @@ offline sau.
 ## 9. Checklist trước khi bấm train
 
 1. `retime_motion.py --report` đã chạy chưa, và clip có nằm trong giới hạn mô-men không? (§4.1)
-   Nếu đã giãn clip: prior có được train lại trên clip mới không?
-2. `git status --short --untracked-files=all` — mọi file sắp dùng đã được commit chưa?
-3. Accelerator là T4 x2 chưa? (`nvidia-smi` ở cell đầu)
-4. Số dof trong `init_pose` có khớp robot không? Đếm, đừng đoán.
-5. Chiều cao root có phải đo từ MJCF không?
-6. `contact_bodies` có phù hợp với motion không? Clip gốc có tự vi phạm nó không?
-7. `motion_file` trong env config và trong prior config có **trùng nhau** không?
-8. `smp_prior_model` có trỏ đúng file `.pt` mà bước [1] vừa sinh không?
-9. Smoke test 2 phút (`--max_samples 200000`) trước khi chạy full.
-10. `WANDB_NAME` đã đặt riêng cho session này chưa?
+2. Prior lấy qua `prior_cache.py` chứ không phải `train_tinymdm.py` trực tiếp? Nếu clip vừa đổi,
+   fingerprint có khớp không — hay script đang báo STALE?
+3. `git status --short --untracked-files=all` — mọi file sắp dùng đã được commit chưa?
+4. Accelerator là T4 x2 chưa? (`nvidia-smi` ở cell đầu)
+5. Số dof trong `init_pose` có khớp robot không? Đếm, đừng đoán.
+6. Chiều cao root có phải đo từ MJCF không?
+7. `contact_bodies` có phù hợp với motion không? Clip gốc có tự vi phạm nó không?
+8. `motion_file` trong env config và trong prior config có **trùng nhau** không?
+9. `smp_prior_model` có trỏ đúng file `.pt` mà bước [1] vừa sinh không?
+10. Smoke test 2 phút (`--max_samples 200000`) trước khi chạy full.
+11. `WANDB_NAME` đã đặt riêng cho session này chưa?
 
 ---
 

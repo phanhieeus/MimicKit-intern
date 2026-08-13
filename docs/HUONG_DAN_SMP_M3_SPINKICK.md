@@ -128,11 +128,11 @@ Phải in ra `3 of 27 joints over limit` (chỉ còn nhóm vai) và `155 frames 
 Bỏ cell này nếu muốn tái lập baseline clip gốc; khi đó Cell 5–8 dùng bản config không có `_slow2`.
 
 ```python
-# Cell 5 — train prior TinyMDM (~30-40 phút, 1 GPU)
-!python tools/diffusion_model/train_tinymdm.py \
+# Cell 5 — prior: lấy từ cache nếu có, train nếu chưa (lần đầu ~35 phút, sau đó ~10 giây)
+!python kaggle/prior_cache.py \
     --cfg_path tools/diffusion_model/config/tinymdm_vr_m3_1_spinkick_slow2.yaml \
     --out_dir /kaggle/working/output/smp_prior_vr_m3_1_spinkick_slow2 \
-    --device cuda:0
+    --project mimickit-smp --device cuda:0
 
 !ls -lh /kaggle/working/output/smp_prior_vr_m3_1_spinkick_slow2/
 ```
@@ -140,6 +140,26 @@ Bỏ cell này nếu muốn tái lập baseline clip gốc; khi đó Cell 5–8 
 Bắt buộc, không bỏ qua được: prior duy nhất trong data pack là của humanoid 28 dof, không dùng cho
 robot 27 dof. Giai đoạn này chỉ dùng một GPU — `train_tinymdm.py` là vòng lặp một tiến trình, không
 có DDP.
+
+`prior_cache.py` bọc quanh `train_tinymdm.py` và giải quyết hai chuyện:
+
+**Không mất prior.** 35 phút GPU cho ra một file duy nhất, và trước đây file đó chỉ tồn tại trong
+`/kaggle/working` — session chết là mất trắng. Giờ nó được publish thành artifact WandB
+(`mimickit-smp/smp_prior_vr_m3_1_spinkick_slow2:latest`), và trong lúc train có watchdog đẩy bản dở
+mỗi 5 phút, nên chết ở phút 30 vẫn còn thứ để dùng lại.
+
+**Không đổi hàm reward giữa các run.** Đây mới là lý do chính. Prior **chính là** hàm reward — SMP
+tính `exp(-sds_loss × scale)` dựa trên nó. Hai lần train cùng config không cho ra cùng một prior, nên
+hai run tự train prior riêng thì **không so được với nhau**. Đúng chuyện đã xảy ra với hai run M3.1:
+tại cùng 131.1 M sample, một cái ở `Ep_Len_Frac` 0.470, cái kia 0.288, không có khác biệt nào khác
+giải thích được.
+
+Artifact mang theo fingerprint băm từ nội dung config và clip. Prior cache có fingerprint không khớp
+là prior cũ — script **từ chối dùng** thay vì im lặng tái sử dụng, vì im lặng đúng là cách tái tạo lại
+lỗi trên. `--force_retrain` để train mới đè lên, `--accept_stale` nếu bạn biết mình đang làm gì.
+
+Đường dẫn kết quả giống hệt nhau ở cả hai nhánh (cache hit hay train mới), nên Cell 6 bên dưới không
+cần biết nhánh nào đã chạy.
 
 ```python
 # Cell 6 — trỏ agent config vào prior vừa train

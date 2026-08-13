@@ -107,10 +107,18 @@ Bỏ qua cell này nếu dùng prior pretrained. Prior chỉ học từ **motion
 nên chạy khá nhanh (~25–40 phút trên T4 với 50k iters).
 
 ```python
-!python tools/diffusion_model/train_tinymdm.py \
+!python kaggle/prior_cache.py \
     --cfg_path tools/diffusion_model/config/tinymdm_single_clip.yaml \
-    --out_dir /kaggle/working/output/smp_prior_spinkick
+    --out_dir /kaggle/working/output/smp_prior_spinkick \
+    --project mimickit-smp
 ```
+
+Gọi qua `prior_cache.py` chứ đừng gọi thẳng `train_tinymdm.py`: nó publish prior thành artifact WandB
+rồi tái sử dụng ở các session sau (~10 giây thay vì 35 phút), chạy watchdog trong lúc train phòng
+session chết giữa chừng, và gắn fingerprint để không dùng nhầm prior cũ sau khi clip thay đổi.
+
+Quan trọng hơn tốc độ: prior **chính là** hàm reward, nên hai run tự train prior riêng thì không so
+được với nhau. Xem [SMP_PLAYBOOK.md §2](SMP_PLAYBOOK.md).
 
 Config [`tinymdm_single_clip.yaml`](../tools/diffusion_model/config/tinymdm_single_clip.yaml) đã trỏ
 sẵn `motion_file: data/motions/humanoid/humanoid_spinkick.pkl` và
