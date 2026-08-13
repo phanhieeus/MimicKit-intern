@@ -54,10 +54,13 @@ Khác biệt còn lại so với clip gốc, nhất quán với việc `Sds_Loss
 
 ---
 
-## 2. Pipeline bốn giai đoạn
+## 2. Pipeline năm giai đoạn
 
 ```
-clip motion (.pkl)  ──►  [1] train prior TinyMDM  ──►  smp_prior_<name>.pt
+clip motion (.pkl)  ──►  [0] kiểm khả thi (5 giây, §4.1)
+                                │  13/27 khớp vượt mô-men?  ──► giãn clip trước
+                                ▼
+                         [1] train prior TinyMDM  ──►  smp_prior_<name>.pt
                                                               │
                                                               ▼
                          [2] train policy PPO + SMP reward  ──►  model.pt
@@ -68,6 +71,10 @@ clip motion (.pkl)  ──►  [1] train prior TinyMDM  ──►  smp_prior_<na
                                                               ▼
                          [4] đọc metric + xem video  ──►  đạt / train tiếp
 ```
+
+**[0] Kiểm khả thi** — `tools/retime_motion.py --report`. Miễn phí và bắt buộc với clip retarget:
+retarget khớp tư thế mà không biết gì về giới hạn actuator. Bỏ qua bước này đã tốn 216 M sample một
+lần rồi. Chi tiết ở §4.1.
 
 **[1] Prior** — `tools/diffusion_model/train_tinymdm.py --cfg_path <cfg> --out_dir <dir>`.
 Mô hình khuếch tán DiT nhỏ (2 layer, 4 head) học phân phối các đoạn chuyển động 10 bước từ clip.
@@ -158,6 +165,63 @@ Một assert **không** được kiểm: số dof. Prior học trên 28 dof củ
 
 ---
 
+## 4.1 Kiểm clip có khả thi với robot không — làm trước khi tốn GPU
+
+Miễn phí, mất 5 giây, và nó là nguyên nhân gốc của thất bại đắt nhất tới giờ.
+
+```bash
+python tools/retime_motion.py --input <clip>.pkl --char_file <robot>.xml --report
+```
+
+**Retarget chỉ khớp tư thế.** Không bước nào trong pipeline retarget biết giới hạn actuator, nên clip
+nhìn từng khung thì đúng vẫn có thể đòi mô-men phần cứng không sinh nổi. Script tính quán tính hợp
+thành quanh từng trục khớp từ MJCF, lấy `τ = I_eff · q̈` trên toàn clip, so với `actuatorfrcrange`.
+
+Với `vr_m3_1_humanoid_spinkick.pkl` trên M3.1: **13/27 khớp vượt giới hạn**, `right_hip_roll` 3.5×,
+`waist_yaw` 3.8×, `left_shoulder_pitch` 11.8×. Không phải nhiễu vi phân số — chỉ 0.9–3.8 % năng
+lượng clip nằm trên 8 Hz.
+
+Dấu hiệu nhận ra khi đã lỡ train: **`Sds_Loss` tốt mà vẫn ngã.**
+
+| | humanoid @ 52 M | M3.1 @ 216 M |
+|---|---|---|
+| `Ep_Len_Frac` | **0.965** | 0.628 |
+| `Sds_Loss_Mean` | 0.321 | **0.260** |
+
+M3.1 bám tư thế tốt hơn humanoid mà vẫn đổ, vì nó luôn trễ nhịp và trễ nhịp lúc trụ một chân thì ngã.
+Bài toán không nằm ở imitation, và thêm sample không mua được thứ actuator không có.
+
+**Cách sửa: giãn clip, đừng đụng gains.** τ tỉ lệ `1/s²` nên `s = sqrt(vượt)`:
+
+```bash
+python tools/retime_motion.py --input <clip>.pkl --output <clip>_slow2.pkl \
+    --char_file <robot>.xml --factor 2.0
+```
+
+`--auto` chọn `s` từ nhóm khớp còn lại sau `--exclude` (mặc định bỏ qua tay — vai bão hòa không làm
+robot ngã, hông bão hòa thì có). Với M3.1 spinkick, 2.0× đưa toàn bộ chân và thắt lưng vào giới hạn;
+tuân thủ cả tay cần 3.44×, chậm tới mức không còn ra cú đá.
+
+Việc này **không đổi một byte vật lý nào**, và đó là điểm mấu chốt. `stiffness` / `damping` trong MJCF
+là kp/kd của vòng PD — `newton_engine.py:837-848` copy chúng vào `joint_target_ke` / `joint_target_kd`
+— và với robot thật chúng chép từ constants của phần cứng (M3.1: `vr_m3_1_constants.py` của mjlab).
+Chỉnh chúng cho dễ train là làm hỏng tính hợp lệ sim-to-real và phải được đội phần cứng duyệt. Giãn
+clip thì không: robot y nguyên, chỉ bảo nó làm chậm lại. Lấy mẫu lại theo thời gian cũng không sinh
+tư thế mới nào ngoài bao lồi của clip gốc, nên các kiểm tra hình học (độ hở mặt đất, `contact_bodies`)
+vẫn giữ nguyên kết quả.
+
+Sau khi giãn thì **phải train lại prior** — prior học nhịp của clip; dùng prior cũ là chấm điểm nhịp
+mới bằng thước cũ.
+
+Ba lưu ý khi so A/B:
+
+- `Ep_Len_Frac` so trực tiếp được giữa hai clip dài ngắn khác nhau, vì `amp_env.py:252` ép
+  `motion_len_term` False — episode kết thúc do ngã hoặc hết `episode_length`, không theo độ dài clip.
+- Sàng lọc ở **30 M sample** (~40 phút) là đủ để phân biệt, đừng chạy full ngay.
+- Dưới 50 M thì `sds_normalizer_samples` chưa kích hoạt, nên A/B vẫn hợp lệ dù baseline có set nó.
+
+---
+
 ## 5. Đọc metric: cái nào tin được, cái nào không
 
 ### Bỏ qua hoàn toàn
@@ -178,9 +242,25 @@ tích luỹ của chính nó, và `sds_normalizer_samples` không được set t
 | `Sds_Loss_Norm_Mean` (tỉ số) | 0.432 | 0.435 |
 | `Smp_Reward_Mean` | 0.252 | 0.094 |
 
-Reward là đại lượng **tương đối theo thời gian thực**, không so sánh được giữa các iteration.
-Muốn nó có nghĩa thì thêm `sds_normalizer_samples: 50000000` vào agent yaml — scale đóng băng sau
-50 M samples và từ đó reward trở thành thước đo tuyệt đối.
+Reward là đại lượng **tương đối theo thời gian thực**, không so sánh được giữa các iteration, cũng
+không so được giữa hai run kể cả của cùng một robot.
+
+**Cách xử lý đúng là đọc `Sds_Loss_Mean` chứ không phải đóng băng normalizer.** `Sds_Loss_Mean` vốn
+đã là đại lượng tuyệt đối và so được giữa các run.
+
+Đừng set `sds_normalizer_samples`. Bản trước của tài liệu này khuyên đặt 50 M cho reward dễ đọc, và
+run M3.1 đã trả giá cho lời khuyên đó. Mẫu số co lại không phải phiền toái — nó là **một curriculum
+tự động**: khi loss giảm, mẫu số giảm theo, nên độ nhạy của reward với phần sai số còn lại cứ tăng
+dần, càng về cuối càng soi kỹ. Humanoid cưỡi curriculum đó suốt 350 M sample
+(`Sds_Norm_Scale` 1.33 → 0.426). M3.1 đóng băng ở 0.869 từ mốc 50 M, và hệ quả:
+
+```
+iter 2100   137.6 M   Sds 0.2582   <- chạm đáy
+iter 3300   216.3 M   Sds 0.2597   <- 80 M sau, không nhúc nhích
+```
+
+`Ep_Len_Frac` vẫn bò lên trong 80 M đó, nên nhìn qua tưởng còn tiến bộ. Thực chất policy đã ngừng
+học bắt chước từ 140 M và chỉ còn mua thêm thăng bằng.
 
 ### Tin được
 
@@ -203,6 +283,11 @@ Muốn nó có nghĩa thì thêm `sds_normalizer_samples: 50000000` vào agent y
 Train tiếp khi `Sds_Loss_Mean` còn giảm rõ. Dừng khi nó phẳng: 1 500 iteration cuối của session 2
 chỉ đổi được 0.188 → 0.186, tức ~100 M samples cho 1 % cải thiện. Lúc đó nếu chất lượng vẫn chưa đạt
 thì vấn đề nằm ở prior, ở reward scale, hoặc ở chính clip — không phải ở số lượng sample.
+
+**Trường hợp nguy hiểm: `Sds_Loss_Mean` phẳng trong khi `Ep_Len_Frac` vẫn tăng.** Đây không phải hội
+tụ, mà là hai mục tiêu đã tách nhau — policy ngừng học bắt chước và chỉ còn học không ngã. M3.1 chạy
+80 M sample trong trạng thái này. Dừng lại và hỏi tại sao nó không bắt chước tốt hơn được nữa; câu
+trả lời thường là clip đòi hỏi thứ robot không làm nổi (§4.1), chứ không phải cần thêm sample.
 
 ---
 
@@ -268,27 +353,38 @@ secrets → clone → setup.sh → prepare_data.py → [train prior] → smoke t
         → train policy (--max_samples 320000000) → make_videos.py → upload model.pt
 ```
 
-### 6.1b Ngân sách phụ thuộc robot — đo lại, đừng chép
+### 6.1b Ngân sách phụ thuộc robot — và ĐỪNG ngoại suy từ vài mốc đầu
 
-310 M là con số của **humanoid**. Nó không chuyển sang robot khác được, và sai theo **cả hai chiều
-cùng lúc**:
+310 M là con số của **humanoid**, không chuyển sang robot khác được:
 
-| | Humanoid | VR M3.1 |
+| | Humanoid | VR M3.1 (clip gốc) |
 |---|---|---|
-| Throughput | 13 058 /s | **9 000–9 300 /s** (~70 %) |
-| Bước ngoặt (`Fail_Frac` rời 1.0) | 93 M | **46 M** (~2× hiệu quả hơn) |
-| Hội tụ | 310 M | ước ~160–200 M |
-| Thời gian tới hội tụ | 6 h 35 m | ước ~6 h 10 m |
+| Throughput | 13 058 /s | **8 500–8 700 /s** (~65 %) |
+| Giải xong thăng bằng (`Ep_Len_Frac` > 0.96) | **52 M** | không đạt trong 216 M |
+| `Sds_Loss` chạm đáy | ~310 M (0.186) | 137 M (0.258), rồi phẳng |
+| Hội tụ | 350 M / 7 h 45 m | không hội tụ — clip bất khả thi (§4.1) |
 
-M3.1 **nhanh hơn về sample** nhưng **chậm hơn về giây**. Hai hiệu ứng gần như triệt tiêu nhau ở đây,
-nhưng đó là trùng hợp — với robot khác chúng có thể cộng dồn theo hướng xấu.
+**Bài học đắt nhất của dự án này nằm ở ô "không đạt".** Từ bốn mốc đầu của M3.1 tôi kết luận nó
+"hiệu quả gấp đôi humanoid" rồi chốt ngân sách 200 M. Cả hai đều sai. Hai đường cong có **hình dạng
+khác hẳn nhau**:
 
-Vì sao M3.1 hiệu quả hơn: giả thuyết là robot thật có phân bố khối lượng, quán tính và gains PD thực
-tế nên dễ trụ hơn humanoid dựng bằng primitive. Chưa kiểm chứng.
+- Humanoid **bò rồi bật**: lẹt đẹt dưới 0.15 tới 52 M rồi dựng gần như thẳng đứng lên 0.96.
+- M3.1 **lên đều rồi tà dần**: tăng tuyến tính tới ~150 M rồi chậm lại, tiệm cận dưới 0.85.
 
-**Cách làm đúng cho một robot mới:** chạy 60 M thăm dò, ghi lại `Fail_Frac` rời 1.0 ở mốc nào, rồi
-nhân mốc đó với ~3.5 (tỉ lệ 93 M → 310 M của humanoid) để ước ngân sách hội tụ. Rẻ hơn nhiều so với
-đặt bừa 320 M rồi phát hiện thiếu hoặc thừa sau tám tiếng.
+Ba, bốn điểm đầu tiên **không phân biệt được hai hình dạng đó**. Ngoại suy tuyến tính từ chúng cho ra
+số sai theo cả hai chiều, và mỗi lần sai là vài tiếng GPU.
+
+Heuristic "nhân mốc bước ngoặt với 3.5" ở bản trước của tài liệu này là sản phẩm của đúng sai lầm ấy
+— **đừng dùng.**
+
+**Cách làm đúng cho một robot mới:**
+
+1. Chạy `retime_motion.py --report` trước (§4.1). Miễn phí, và loại luôn khả năng clip bất khả thi.
+2. Chạy 30 M sàng lọc. Mục tiêu là phát hiện lỗi cấu hình và so A/B, **không phải** để ước ngân sách.
+3. Chỉ ước ngân sách sau khi `Ep_Len_Frac` đã vượt điểm bật (> 0.9). Trước đó thì con số duy nhất
+   trung thực là "chưa biết".
+4. Theo dõi `Sds_Loss_Mean` để quyết định dừng. Nếu nó phẳng mà `Ep_Len_Frac` còn tăng, xem §5 —
+   đó là dấu hiệu bỏ tiền mua nhầm thứ.
 
 ### 6.2 Khi nào vẫn nên chia hai session
 
@@ -384,44 +480,51 @@ offline sau.
 
 ## 9. Checklist trước khi bấm train
 
-1. `git status --short --untracked-files=all` — mọi file sắp dùng đã được commit chưa?
-2. Accelerator là T4 x2 chưa? (`nvidia-smi` ở cell đầu)
-3. Số dof trong `init_pose` có khớp robot không? Đếm, đừng đoán.
-4. Chiều cao root có phải đo từ MJCF không?
-5. `contact_bodies` có phù hợp với motion không? Clip gốc có tự vi phạm nó không?
-6. `motion_file` trong env config và trong prior config có **trùng nhau** không?
-7. `smp_prior_model` có trỏ đúng file `.pt` mà bước [1] vừa sinh không?
-8. Smoke test 2 phút (`--max_samples 200000`) trước khi chạy full.
-9. `WANDB_NAME` đã đặt riêng cho session này chưa?
+1. `retime_motion.py --report` đã chạy chưa, và clip có nằm trong giới hạn mô-men không? (§4.1)
+   Nếu đã giãn clip: prior có được train lại trên clip mới không?
+2. `git status --short --untracked-files=all` — mọi file sắp dùng đã được commit chưa?
+3. Accelerator là T4 x2 chưa? (`nvidia-smi` ở cell đầu)
+4. Số dof trong `init_pose` có khớp robot không? Đếm, đừng đoán.
+5. Chiều cao root có phải đo từ MJCF không?
+6. `contact_bodies` có phù hợp với motion không? Clip gốc có tự vi phạm nó không?
+7. `motion_file` trong env config và trong prior config có **trùng nhau** không?
+8. `smp_prior_model` có trỏ đúng file `.pt` mà bước [1] vừa sinh không?
+9. Smoke test 2 phút (`--max_samples 200000`) trước khi chạy full.
+10. `WANDB_NAME` đã đặt riêng cho session này chưa?
 
 ---
 
 ## 10. Trạng thái hiện tại cho VR M3.1
 
-Các file cấu hình cho M3.1 **đã có sẵn trong working tree** và đã được viết đúng theo những nguyên
-tắc ở mục 3 — 27 dof, root 0.854 m, link name của M3.1, contact bodies là hai bàn chân, đã kiểm
-clip zombie không tự vi phạm:
+Hướng dẫn từng cell: [HUONG_DAN_SMP_M3_SPINKICK.md](HUONG_DAN_SMP_M3_SPINKICK.md).
+
+**Đã xong.** Toàn bộ cấu hình spinkick đã commit và đã chạy thật:
 
 ```
-data/envs/smp_vr_m3_1_env.yaml
-data/agents/smp_vr_m3_1_agent.yaml
-args/smp_vr_m3_1_args.txt
-tools/diffusion_model/config/tinymdm_vr_m3_1.yaml
+data/envs/smp_vr_m3_1_spinkick_env.yaml          data/envs/smp_vr_m3_1_spinkick_slow2_env.yaml
+data/agents/smp_vr_m3_1_spinkick_agent.yaml      data/agents/smp_vr_m3_1_spinkick_slow2_agent.yaml
+args/smp_vr_m3_1_spinkick_kaggle_args.txt        args/smp_vr_m3_1_spinkick_slow2_kaggle_args.txt
+tools/diffusion_model/config/tinymdm_vr_m3_1_spinkick.yaml    (+ bản _slow2)
+kaggle/make_m3_dataset.sh                        kaggle/checkpoint_watchdog.py
+tools/retime_motion.py
 ```
 
-**Nhưng cả bốn file đều đang untracked.** Chạy Kaggle bây giờ là dính đúng cạm bẫy ở mục 8 — bản
-clone sẽ không có chúng. Commit trước khi làm bất cứ việc gì khác.
+Cấu hình đúng, hạ tầng chạy được, prior train được, pipeline thông từ đầu tới video.
 
-Việc còn lại cho M3.1:
+**Kết quả clip gốc: không hội tụ, và đã biết vì sao.** Run 216 M sample dừng ở `Ep_Len_Frac` 0.628
+với `Sds_Loss` phẳng từ 137 M. Nguyên nhân là clip retarget đòi mô-men vượt giới hạn actuator ở
+13/27 khớp (§4.1) — không phải lỗi cấu hình, không phải thiếu sample. **Đừng chạy lại clip gốc với
+`--max_samples` cao hơn.**
 
-1. Commit bốn file trên (và các script trong `tools/` mà chúng phụ thuộc).
-2. Train prior: data pack có sẵn `smp_prior_spinkick.pt` nhưng nó gắn với skeleton humanoid 28 dof,
-   **không tái sử dụng được** cho robot 27 dof. Phải tự chạy `train_tinymdm.py` với
-   `tinymdm_vr_m3_1.yaml`, rồi trỏ `smp_prior_model` trong agent yaml vào file `.pt` sinh ra.
-3. Train policy theo đúng ngân sách ở mục 6, dự kiến ~400 M samples.
-4. Render và đánh giá theo mục 7.
+**Việc tiếp theo:** thí nghiệm sàng lọc 30 M với clip giãn 2.0× (`*_slow2`), ~1 h 15 m GPU kể cả
+prior. Baseline để so là `Ep_Len_Frac` **0.10 tại 30 M**; trên 0.30 thì chạy full, dưới 0.15 thì nhịp
+không phải nút thắt.
 
-Khác biệt đáng lưu ý so với humanoid: clip zombie dài 1098 frame (~18 s ở 60 fps), trong khi spinkick
-chỉ ~78 frame (~1.3 s). Clip dài gấp 14 lần nghĩa là phân phối chuyển động rộng hơn nhiều, prior khó
-hơn — nhiều khả năng cần hơn 310 M samples. Theo dõi `Sds_Loss_Mean` để quyết định dừng, đừng áp
-cứng con số của humanoid.
+**Nếu 2.0× không đủ:** phương án còn lại là nâng damping gối (kd 10 → 25, đưa ζ từ 0.64 lên ~1.6).
+Đây là chỉnh tham số điều khiển của phần cứng thật, **phải được đội robot duyệt** và phải đồng bộ
+ngược về `vr_m3_1_constants.py`, nếu không policy sẽ không transfer. Bảng mô-men ở §4.1 là lý lẽ bằng
+số để mở cuộc trao đổi đó.
+
+**Motion tiếp theo (zombie):** clip dài 1098 frame (~18 s) so với spinkick 78 frame (~1.3 s). Phân
+phối chuyển động rộng hơn nhiều nên prior khó hơn. Chạy `retime_motion.py --report` trước tiên —
+zombie chậm hơn spinkick nhiều nên nhiều khả năng khả thi sẵn, nhưng đừng đoán.

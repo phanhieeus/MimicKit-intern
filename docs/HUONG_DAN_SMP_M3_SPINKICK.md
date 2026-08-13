@@ -16,9 +16,10 @@ Bản humanoid: [HUONG_DAN_SMP_KAGGLE.md](HUONG_DAN_SMP_KAGGLE.md).
 | `init_pose` | 34 số | **33 số**, root z = 0.854 m |
 | Data đến từ | data pack 534 MB (Kaggle Dataset) | **Dataset thứ hai, phải tự tạo** |
 | Prior | có sẵn `smp_prior_spinkick.pt` | **chưa có, phải train** |
-| Clip | 78 frame @ 60 fps | 78 frame @ 60 fps (bản retarget) |
+| Clip | 78 frame @ 60 fps | bản retarget 78 frame, **phải giãn 2.0× → 155 frame** (xem Cell 4b) |
 
-Hai dòng in đậm cuối là toàn bộ công việc phát sinh: một Dataset và một lần train prior.
+Ba dòng in đậm cuối là toàn bộ công việc phát sinh: một Dataset, một lần train prior, và một bước
+giãn clip cho vừa khả năng actuator.
 
 ---
 
@@ -48,7 +49,7 @@ Clip spinkick chỉ 41 KB.
 
 ---
 
-## Notebook — 9 cell
+## Notebook — 10 cell
 
 Accelerator: **GPU T4 x2**. P100 (sm_60) không chạy được, PyTorch trong image chỉ build cho sm_70+.
 Chạy bằng **Save Version → Save & Run All (Commit)** để có 12 h thay vì 9 h.
@@ -61,7 +62,7 @@ sec = UserSecretsClient()
 os.environ["WANDB_API_KEY"] = sec.get_secret("WANDB_API_KEY")
 os.environ["GITHUB_TOKEN"]  = sec.get_secret("GITHUB_TOKEN")
 os.environ["WANDB_PROJECT"] = "mimickit-smp"
-os.environ["WANDB_NAME"]    = "smp_m3_spinkick"
+os.environ["WANDB_NAME"]    = "smp_m3_spinkick_slow2"
 !nvidia-smi --query-gpu=name,memory.total --format=csv
 ```
 
@@ -87,6 +88,12 @@ os.chdir(REPO)
 # Cell 4 — data: pack gốc + dataset M3.1
 import os, subprocess
 
+# Bắt buộc, phải trước prepare_data.py. link_tree() symlink CẢ thư mục nếu đích
+# chưa tồn tại, và đích đó là /kaggle/input chỉ đọc -- Cell 4b sẽ không ghi được
+# clip đã giãn vào đấy. Tạo trước thì từng file được symlink riêng, thư mục ghi
+# được, và các file thật nằm cạnh symlink không sao cả.
+os.makedirs("data/motions/vr_m3_1", exist_ok=True)
+
 for name in sorted(os.listdir("/kaggle/input")):
     path = os.path.join("/kaggle/input", name)
     print("=== {} ===".format(path))
@@ -106,13 +113,28 @@ một lần. `link_tree()` merge đệ quy và bỏ qua entry đã tồn tại n
 nào không phải data pack chỉ in ERROR rồi bỏ qua.
 
 ```python
+# Cell 4b — giãn clip 2.0x cho vừa khả năng actuator (~5 giây)
+!python tools/retime_motion.py \
+    --input  data/motions/vr_m3_1/vr_m3_1_humanoid_spinkick.pkl \
+    --output data/motions/vr_m3_1/vr_m3_1_humanoid_spinkick_slow2.pkl \
+    --char_file data/assets/vr_m3_1/vr_m3_1.xml \
+    --factor 2.0
+```
+
+Clip gốc đòi mô-men vượt giới hạn ở 13/27 khớp — xem
+[Clip gốc bất khả thi về động lực học](#clip-gốc-bất-khả-thi-về-động-lực-học--đọc-phần-này-trước-khi-train).
+Phải in ra `3 of 27 joints over limit` (chỉ còn nhóm vai) và `155 frames @ 60 fps = 2.567 s`.
+
+Bỏ cell này nếu muốn tái lập baseline clip gốc; khi đó Cell 5–8 dùng bản config không có `_slow2`.
+
+```python
 # Cell 5 — train prior TinyMDM (~30-40 phút, 1 GPU)
 !python tools/diffusion_model/train_tinymdm.py \
-    --cfg_path tools/diffusion_model/config/tinymdm_vr_m3_1_spinkick.yaml \
-    --out_dir /kaggle/working/output/smp_prior_vr_m3_1_spinkick \
+    --cfg_path tools/diffusion_model/config/tinymdm_vr_m3_1_spinkick_slow2.yaml \
+    --out_dir /kaggle/working/output/smp_prior_vr_m3_1_spinkick_slow2 \
     --device cuda:0
 
-!ls -lh /kaggle/working/output/smp_prior_vr_m3_1_spinkick/
+!ls -lh /kaggle/working/output/smp_prior_vr_m3_1_spinkick_slow2/
 ```
 
 Bắt buộc, không bỏ qua được: prior duy nhất trong data pack là của humanoid 28 dof, không dùng cho
@@ -121,20 +143,20 @@ có DDP.
 
 ```python
 # Cell 6 — trỏ agent config vào prior vừa train
-PRIOR = "/kaggle/working/output/smp_prior_vr_m3_1_spinkick/model.pt"
+PRIOR = "/kaggle/working/output/smp_prior_vr_m3_1_spinkick_slow2/model.pt"
 assert os.path.isfile(PRIOR), "prior chua duoc tao, xem lai Cell 5"
 
 import re, pathlib
-p = pathlib.Path("data/agents/smp_vr_m3_1_spinkick_agent.yaml")
+p = pathlib.Path("data/agents/smp_vr_m3_1_spinkick_slow2_agent.yaml")
 p.write_text(re.sub(r'^smp_prior_model:.*$', f'smp_prior_model: "{PRIOR}"',
                     p.read_text(), flags=re.M))
-!grep smp_prior data/agents/smp_vr_m3_1_spinkick_agent.yaml
+!grep smp_prior data/agents/smp_vr_m3_1_spinkick_slow2_agent.yaml
 ```
 
 ```python
 # Cell 7 — smoke test 2 phút
 !python mimickit/run.py \
-    --arg_file args/smp_vr_m3_1_spinkick_kaggle_args.txt \
+    --arg_file args/smp_vr_m3_1_spinkick_slow2_kaggle_args.txt \
     --mode train --num_envs 256 --max_samples 200000 \
     --logger txt --out_dir /kaggle/working/output/smoke \
     --devices cuda:0
@@ -153,9 +175,9 @@ policy dở. Sửa trước khi chạy full.
 import subprocess
 wd = subprocess.Popen([
     "python", "kaggle/checkpoint_watchdog.py",
-    "--model_file", "/kaggle/working/output/smp_m3_spinkick/model.pt",
+    "--model_file", "/kaggle/working/output/smp_m3_spinkick_slow2/model.pt",
     "--project", "mimickit-smp",
-    "--run_name", "smp_m3_spinkick_ckpt",
+    "--run_name", "smp_m3_spinkick_slow2_ckpt",
     "--interval", "1200",
 ])
 print("watchdog pid", wd.pid)
@@ -175,29 +197,28 @@ Mất session vẫn lấy lại được:
 ```
 
 ```python
-# Cell 8 — train policy (~9h35m ở tốc độ đo được của M3.1)
+# Cell 8 — train policy: sàng lọc 30 M trước (~40 phút)
 !python mimickit/run.py \
-    --arg_file args/smp_vr_m3_1_spinkick_kaggle_args.txt \
-    --mode train \
-    --num_envs 1024 \
-    --max_samples 200000000 \
-    --logger wandb \
-    --out_dir /kaggle/working/output/smp_m3_spinkick \
-    --devices cuda:0 cuda:1
+    --arg_file args/smp_vr_m3_1_spinkick_slow2_kaggle_args.txt \
+    --max_samples 30000000
 ```
 
-**200 M chứ không phải 320 M của humanoid.** Hai hiệu ứng ngược chiều nhau, đừng lẫn:
+**Chạy 30 M trước, đừng đặt thẳng con số lớn.** Baseline clip gốc tại 30 M là `Ep_Len_Frac` **0.10**.
+Nếu bản giãn vượt **0.30** thì giả thuyết nhịp đúng, lúc đó mới chạy full; dưới 0.15 thì nhịp không
+phải nút thắt và tiền GPU nên để dành. Bảng đọc kết quả đầy đủ ở mục
+[Clip gốc bất khả thi về động lực học](#clip-gốc-bất-khả-thi-về-động-lực-học--đọc-phần-này-trước-khi-train).
 
-- M3.1 **nhanh hơn về sample** — đạt bước ngoặt ở 46 M, humanoid cần 93 M. Ước tính hội tụ quanh
-  160–200 M thay vì 310 M.
-- M3.1 **chậm hơn về giây** — 9 000–9 300 samples/s, chỉ ~70 % của humanoid (13 058), vì 27 dof,
-  30 body và mesh STL thật.
+Mọi tham số còn lại nằm trong arg file (1024 env, hai GPU, `--save_int_models true`,
+`--out_dir /kaggle/working/output/smp_m3_spinkick_slow2`), nên không cần lặp lại trên dòng lệnh.
 
-200 M ≈ **6 h 10 m**, cả session ~7 h 05 m. Đặt 320 M thì thành ~10 h 30 m — vẫn lọt batch 12 h nhưng
-sát nút, và ăn gần hết quota tuần. Số liệu đầy đủ ở mục
-[Ngân sách sample](#ngân-sách-sample-m31-cần-ít-hơn-humanoid) bên dưới.
+**Chưa có con số `--max_samples` cho lần chạy full**, và đừng chép 200 M từ bản trước của tài liệu
+này — nó là ngoại suy sai từ bốn mốc đầu. Chốt sau khi có kết quả 30 M.
 
-Theo dõi `Sds_Loss_Mean`: còn giảm rõ ở 200 M thì nối thêm session, phẳng sớm thì lần sau hạ tiếp.
+Về tốc độ: M3.1 chạy **8 500–8 700 samples/s**, khoảng 65 % của humanoid (13 058), vì 27 dof, 30 body
+và mesh STL thật. Nhanh hơn về sample nhưng chậm hơn về giây là hai chuyện ngược chiều, rất dễ lẫn.
+
+Theo dõi **`Sds_Loss_Mean`**, không phải `Smp_Reward_Mean` — reward mang thang chia riêng của từng
+run nên không so được, kể cả với chính run trước của cùng robot.
 
 ```python
 # Cell 8b — tắt watchdog sau khi train xong
@@ -207,18 +228,18 @@ wd.terminate()
 ```python
 # Cell 9 — video + upload
 !python kaggle/make_videos.py \
-    --out_dir      /kaggle/working/output/smp_m3_spinkick \
-    --env_config   data/envs/smp_vr_m3_1_spinkick_env.yaml \
-    --agent_config data/agents/smp_vr_m3_1_spinkick_agent.yaml \
+    --out_dir      /kaggle/working/output/smp_m3_spinkick_slow2 \
+    --env_config   data/envs/smp_vr_m3_1_spinkick_slow2_env.yaml \
+    --agent_config data/agents/smp_vr_m3_1_spinkick_slow2_agent.yaml \
     --char_file    data/assets/vr_m3_1/vr_m3_1.xml \
-    --motion_file  data/motions/vr_m3_1/vr_m3_1_humanoid_spinkick.pkl \
+    --motion_file  data/motions/vr_m3_1/vr_m3_1_humanoid_spinkick_slow2.pkl \
     --wandb_project mimickit-smp \
     --steps 300
 
 !python kaggle/wandb_upload.py --project mimickit-smp \
-    --run_name smp_m3_spinkick_files \
-    --files /kaggle/working/output/smp_m3_spinkick/model.pt \
-            /kaggle/working/output/smp_m3_spinkick/log.txt
+    --run_name smp_m3_spinkick_slow2_files \
+    --files /kaggle/working/output/smp_m3_spinkick_slow2/model.pt \
+            /kaggle/working/output/smp_m3_spinkick_slow2/log.txt
 ```
 
 `--char_file` **phải** là MJCF của M3.1, mặc định của script là humanoid. Chỉ xem
@@ -227,54 +248,131 @@ lý do ở [SMP_PLAYBOOK.md §7](SMP_PLAYBOOK.md).
 
 ---
 
-## Ngân sách sample: M3.1 cần ÍT hơn humanoid
+## Clip gốc bất khả thi về động lực học — đọc phần này trước khi train
 
-Đây là kết quả bất ngờ nhất từ run `wjw4wwo3`, và là lý do Cell 8 dùng 200 M thay vì 320 M.
+Run `wjw4wwo3` chạy hết 216 M sample chỉ để chứng minh một điều: **không phải thiếu sample.**
 
-Cùng clip nên đối chiếu trực tiếp được. `Ep_Len_Frac` và `Fail_Frac` đo cùng một thứ trên cả hai
-robot — trần 300 step, "có trụ được không":
+Retarget chỉ khớp *tư thế*. Không có bước nào trong pipeline đó biết giới hạn actuator của robot, nên
+một clip nhìn từng khung thì đúng vẫn có thể đòi mô-men mà phần cứng không sinh nổi. Đo trên chính
+MJCF của M3.1 — quán tính hợp thành quanh từng trục khớp, `τ = I_eff · q̈`, so với `actuatorfrcrange`:
 
-| Samples | Humanoid `Ep_Len_Frac` | **M3.1 `Ep_Len_Frac`** | Humanoid `Fail_Frac` | **M3.1 `Fail_Frac`** |
-|---|---|---|---|---|
-| 13 M | ~0.06 | 0.087 | 1.0 | 1.0 |
-| 26 M | ~0.08 | 0.100 | 1.0 | 1.0 |
-| 46 M | ~0.11 | **0.170** | 1.0 | **0.896** ← M3.1 vỡ |
-| 52 M | ~0.12 | **0.236** | 1.0 | **0.820** |
-| 60 M | 0.139 | – | 1.0 | – |
-| 93 M | 0.79 | – | 0.22 ← humanoid vỡ | – |
+| khớp | τ cần | giới hạn | vượt |
+|---|---|---|---|
+| `left_shoulder_pitch` | 782 N·m | 66 | **11.8×** |
+| `waist_yaw` | 389 N·m | 102 | **3.8×** |
+| `right_hip_roll` | 1265 N·m | 360 | **3.5×** |
+| `right_hip_pitch` | 884 N·m | 360 | **2.5×** |
+| `left_hip_roll` | 514 N·m | 360 | 1.4× |
 
-**M3.1 đạt bước ngoặt ở 46 M, humanoid cần 93 M — hiệu quả gấp đôi trên mỗi sample.**
+**13 trên 27 khớp vượt giới hạn**, gồm cả nhóm quyết định thăng bằng. Đây không phải nhiễu vi phân
+số: chỉ 0.9–3.8 % năng lượng của clip nằm trên 8 Hz. Nó là chuyển động thật, tần số thấp — cú spinkick
+1.28 s xoay trọn 397° mà người làm được còn robot này thì không.
 
-Giả thuyết: robot thật có phân bố khối lượng, quán tính và gains PD thực tế nên dễ trụ hơn cái
-humanoid dựng bằng primitive; clip retarget cũng có thể mượt hơn. Chưa kiểm chứng, nhưng xu hướng
-nhất quán qua bốn mốc liên tiếp.
+Tự đo lại bất cứ clip nào:
 
-Chiếu theo tỉ lệ đó — humanoid hội tụ ở 310 M — M3.1 nhiều khả năng phẳng quanh **160–200 M**:
-
-```
---max_samples 200000000
+```bash
+python tools/retime_motion.py --input <clip>.pkl --char_file <robot>.xml --report
 ```
 
-Ở 9 000 samples/s là **6 h 10 m**, cộng prior 40 phút + setup 5 phút + video 10 phút ⇒ **~7 h 05 m**
-cả session. So với 320 M (~10 h 30 m) thì đây là khác biệt giữa "dư biên thật" và "sát nút".
+### Bằng chứng: bài toán không nằm ở imitation
 
-**Vẫn theo dõi `Sds_Loss_Mean` để quyết định thay vì tin con số.** Nếu ở 200 M nó còn giảm rõ thì nối
-thêm một session; nếu phẳng từ 150 M thì lần sau hạ tiếp.
+So tại thời điểm humanoid *đã giải xong* thăng bằng:
 
-### Nếu M3.1 tụt lại thay vì vượt lên
+| | humanoid @ 52 M | M3.1 @ 216 M |
+|---|---|---|
+| `Ep_Len_Frac` | **0.965** | 0.628 |
+| `Sds_Loss_Mean` | 0.321 | **0.260** |
 
-Kịch bản ngược: tới 130 M mà `Ep_Len_Frac` vẫn dưới 0.3 (humanoid ở mốc đó đạt 0.98). Dừng soi config
-thay vì đốt tiếp GPU. Nghi ngờ theo thứ tự: `init_pose` (chiều cao root, thứ tự dof), gains PD trong
-MJCF, rồi mới tới chất lượng retarget của clip.
+M3.1 bám tư thế **tốt hơn** humanoid mà vẫn ngã. Mạng biết phải làm gì; nó chỉ luôn trễ nhịp, và trễ
+nhịp lúc trụ một chân thì đổ. Thêm sample không mua được thứ actuator không có.
+
+Diễn biến của chính run đó nói rõ hai mục tiêu tách nhau từ 140 M:
+
+```
+iter 1200    78.6 M   EpLen 0.366   Sds 0.3008
+iter 2100   137.6 M   EpLen 0.481   Sds 0.2582   <- Sds chạm đáy
+iter 3300   216.3 M   EpLen 0.628   Sds 0.2597   <- 80 M sau, y nguyên
+```
+
+Từ 140 M trở đi không còn học chất lượng động tác, chỉ mua thêm thăng bằng — với giá rất đắt.
+
+### Cách xử lý: giãn clip, không đụng robot
+
+τ tỉ lệ `1/s²`, nên giãn thời gian hệ số `s` giảm mô-men cần theo bình phương. Ở **2.0×** mọi khớp
+chân và thắt lưng vào trong giới hạn, chỉ còn bộ ba vai trái vượt (2.96/1.58/1.54×) — vai bão hòa
+không làm robot ngã, hông bão hòa thì có. Tuân thủ toàn bộ cần 3.44×, chậm tới mức không còn ra cú đá.
+
+```bash
+python tools/retime_motion.py \
+    --input  data/motions/vr_m3_1/vr_m3_1_humanoid_spinkick.pkl \
+    --output data/motions/vr_m3_1/vr_m3_1_humanoid_spinkick_slow2.pkl \
+    --char_file data/assets/vr_m3_1/vr_m3_1.xml --factor 2.0
+```
+
+`--auto` tự chọn `s` từ nhóm khớp còn lại sau `--exclude` (mặc định bỏ qua tay).
+
+Việc này **không thay đổi một byte vật lý nào**. Đây là điểm quan trọng: `stiffness` / `damping` trong
+MJCF là kp/kd của vòng PD (`newton_engine.py:837-848` copy chúng vào `joint_target_ke/kd`), chép từ
+`vr_m3_1_constants.py` của mjlab, tức tham số điều khiển của phần cứng thật. Chỉnh chúng để train dễ
+hơn là làm hỏng tính hợp lệ sim-to-real và cần đội phần cứng duyệt. Giãn clip thì không — robot y
+nguyên, chỉ bảo nó đá chậm lại.
+
+Bộ config `*_slow2` đã dựng sẵn và chỉ khác baseline đúng một dòng `motion_file`:
+
+| | file |
+|---|---|
+| env | `data/envs/smp_vr_m3_1_spinkick_slow2_env.yaml` |
+| agent | `data/agents/smp_vr_m3_1_spinkick_slow2_agent.yaml` |
+| prior | `tools/diffusion_model/config/tinymdm_vr_m3_1_spinkick_slow2.yaml` |
+| args | `args/smp_vr_m3_1_spinkick_slow2_kaggle_args.txt` |
+
+Ba điều bắt buộc khi dùng chúng:
+
+1. **Cell 4 phải `os.makedirs("data/motions/vr_m3_1", exist_ok=True)` trước `prepare_data.py`.**
+   `link_tree()` symlink cả thư mục nếu đích chưa tồn tại, và thư mục đó trỏ vào `/kaggle/input` chỉ
+   đọc — bước giãn clip sẽ báo `Permission denied`. Tạo trước thì từng file được symlink riêng và thư
+   mục ghi được.
+2. **Train lại prior.** Prior học nhịp của clip; dùng prior cũ là chấm điểm nhịp mới bằng thước cũ.
+3. **Chạy sàng lọc 30 M trước.** `Ep_Len_Frac` so trực tiếp được với baseline vì `amp_env.py:252` ép
+   `motion_len_term` False — episode kết thúc do ngã hoặc hết 10 s, không theo độ dài clip.
+
+Mốc để đọc kết quả, baseline là **0.10 tại 30 M**:
+
+| `Ep_Len_Frac` @ 30 M | kết luận |
+|---|---|
+| > 0.30 | nhịp đúng là nút thắt, chạy full |
+| 0.15–0.30 | có tác dụng nhưng chưa đủ, thử 2.5× |
+| < 0.15 | nhịp không phải nút thắt; bảng mô-men ở trên là lý lẽ bằng số để bàn với đội phần cứng |
+
+Chi phí ~1 h 15 m GPU: prior 35 phút + RL 40 phút.
+
+### Ngân sách sample
+
+Chỉ chốt được sau khi thí nghiệm giãn clip cho kết quả. Con số duy nhất đã đo chắc chắn là của
+humanoid: giải xong thăng bằng ở **52 M**, `Sds_Loss` còn giảm tới ~310 M, tổng 350 M.
+
+Với clip gốc thì M3.1 tiệm cận ở đâu đó dưới 0.85 và không bao giờ tới — đừng chạy lại nó với
+`--max_samples` cao hơn. Sửa clip trước, đo lại, rồi mới định ngân sách.
+
+### Đừng ngoại suy tuyến tính từ `Ep_Len_Frac` sớm
+
+Bài học đắt nhất của lần này. Từ bốn mốc đầu tôi kết luận "M3.1 hiệu quả gấp đôi humanoid" rồi
+"M3.1 chỉ cần 200 M". Cả hai đều sai, vì humanoid không tăng tuyến tính — nó bò ở mức thấp rồi bật
+lên gần thẳng đứng quanh 52 M, còn M3.1 tăng đều rồi từ từ chậm lại. Hai hình dạng đường cong khác
+hẳn nhau, và ba điểm đầu không phân biệt được chúng.
+
+Chỉ so ngân sách sau khi cả hai run đã vượt điểm bật, không bao giờ trước.
 
 ### Hai thứ KHÔNG so được giữa hai robot
 
-**`Sds_Loss_Mean`** — chuẩn hoá theo hai prior khác nhau, trên hai không gian obs khác nhau. Chỉ so
-hình dạng đường cong, đừng so giá trị.
+**`Smp_Reward_Mean`** — mỗi run một `Sds_Norm_Scale` riêng nên reward không so được, kể cả giữa hai
+run của cùng robot. Dùng `Sds_Loss_Mean`: nó là đại lượng tuyệt đối và chính nó cho bảng đối chiếu ở
+trên. (Chỉ nên so khi hai prior có cùng không gian obs — cùng clip, cùng `num_disc_obs_steps` — và
+hiểu rằng đó là so xấp xỉ.)
 
-**Thời gian.** M3.1 chạy **9 000–9 300 samples/s**, chỉ ~70 % của humanoid (13 058) vì 27 dof, 30 body
-và mesh STL thật. Nhanh hơn về sample nhưng chậm hơn về giây — hai điều này ngược chiều nhau và rất
-dễ lẫn.
+**Thời gian.** M3.1 chạy **8 500–8 700 samples/s**, khoảng 65 % của humanoid (13 058) vì 27 dof,
+30 body và mesh STL thật. Đo trên toàn bộ run 216 M — con số 9 000–9 300 ở bản trước là ước lượng từ
+vài trăm iteration đầu, khi episode còn ngắn nên reset nhiều và rẻ.
 
 ### Cảnh báo về credit
 
@@ -285,11 +383,23 @@ failed và output không được lưu, tức mất sạch `model.pt` dù mọi 
 
 ## Đã kiểm sẵn cho clip này
 
-Forward kinematics qua toàn bộ 78 frame của `vr_m3_1_humanoid_spinkick.pkl`:
+Forward kinematics (`MJCFCharModel`) qua toàn bộ frame của **cả hai** bản clip:
 
-- Cổ chân thấp nhất ở **+4.4 cm** (trái) và **+5.1 cm** (phải) — đúng bằng độ dày đế, bàn chân có đạp đất thật.
-- Body thấp kế tiếp là đầu gối, **không bao giờ xuống dưới +38.8 cm**.
+| body thấp nhất | clip gốc (78 frame) | bản giãn 2.0× (155 frame) |
+|---|---|---|
+| `left_ankle_pitch_link` | +4.43 cm | +4.43 cm |
+| `left_ankle_roll_link` | +4.43 cm | +4.43 cm |
+| `right_ankle_pitch_link` | +5.06 cm | +5.06 cm |
+
+Cổ chân chạm thấp nhất ở +4.4 cm — đúng bằng độ dày đế, tức bàn chân có đạp đất thật. Body thấp kế
+tiếp là đầu gối, không bao giờ xuống dưới +38.8 cm.
 
 Nghĩa là `contact_bodies: [right_ankle_roll_link, left_ankle_roll_link]` an toàn với biên rất rộng:
 clip tham chiếu không bao giờ tự vi phạm kiểm tra ngã. Không cần chạy
-`tools/fix_ground_penetration.py` cho clip này.
+`tools/fix_ground_penetration.py` cho clip nào trong hai clip.
+
+Giãn thời gian không đổi con số nào ở trên, đúng như thiết kế: `retime_motion.py` chỉ **lấy mẫu lại
+theo thời gian**, không đụng tới tư thế. Khung chẵn tái tạo bản gốc chính xác tới 4.4e-16, khung lẻ
+là nội suy giữa hai khung liền kề (slerp cho xoay gốc, tuyến tính cho góc khớp), nên không tư thế mới
+nào được sinh ra ngoài bao lồi của clip gốc. Biên độ dof, chiều cao root và tổng góc xoay 397° đều
+giữ nguyên.
