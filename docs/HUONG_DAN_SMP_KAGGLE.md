@@ -2,6 +2,10 @@
 
 Hướng dẫn từng cell, từ `git clone` đến mp4 so sánh policy với motion gốc, mọi thứ đẩy lên WandB.
 
+> Công thức này **đã chạy thành công và kiểm chứng bằng video**. Muốn áp dụng cho motion khác hoặc
+> robot khác (M3.1) thì đọc [SMP_PLAYBOOK.md](SMP_PLAYBOOK.md) — ở đó có số liệu thực đo, ngân sách
+> sample, danh sách những gì phải sửa khi đổi robot, và cách đọc metric.
+
 - Nhân vật: **humanoid native** của MimicKit (`data/assets/humanoid/humanoid.xml`), **không phải** robot
   `vr_m3_1` / g1 / go2.
 - Motion: `data/motions/humanoid/humanoid_spinkick.pkl` (spinkick — cú đá xoay).

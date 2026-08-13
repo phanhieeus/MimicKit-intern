@@ -1,0 +1,338 @@
+# Playbook: train SMP cho một motion mới hoặc một robot mới
+
+Tài liệu này đúc kết từ một lần train **đã chạy thành công và đã kiểm chứng bằng video**: humanoid
+native của MimicKit học động tác spinkick từ một clip duy nhất, bằng SMP (Score-Matching Motion
+Priors), trên Kaggle với 2× Tesla T4.
+
+Mục đích: lần sau đổi sang motion khác, hoặc sang robot khác (VR M3.1), thì biết **đổi cái gì, mong
+đợi số liệu ra sao, và dừng ở đâu**. Các cell Kaggle cụ thể nằm ở
+[`HUONG_DAN_SMP_KAGGLE.md`](HUONG_DAN_SMP_KAGGLE.md); file này nói về *quy trình* và *cách đọc kết
+quả*, không lặp lại lệnh.
+
+---
+
+## 1. Bằng chứng: kết quả đã đạt được
+
+Hai session nối tiếp nhau, session sau load checkpoint của session trước qua `--model_file`.
+
+| | Session 1 (`mbi5axg4`) | Session 2 (`m6rv7ht3`) |
+|---|---|---|
+| Iterations | 915 | 5 340 |
+| Samples | 60.0 M | 350.0 M |
+| Thời gian | 1 h 27 m | 7 h 27 m |
+| Throughput | 11 546 /s | 13 058 /s |
+| `Sds_Loss_Mean` | 2.41 → 0.93 | 0.58 → **0.186** |
+| `Train_Episode_Length` | 17.5 → 41.7 | 24.2 → **298.3** / 300 |
+| `Test_Episode_Length` | 18.2 → 53.9 | 54.7 → **300** (kịch trần) |
+| `Ep_Len_Frac` | 0.14 | **0.994** |
+| `Timeout_Frac` | ~0 | **0.94** |
+| `Critic_Loss` | 0.06 → 0.66 | 0.85 → **0.098** |
+
+**Tổng chi phí đến khi thành công: ~410 M samples, ~9 giờ trên 2× T4.**
+
+Bước ngoặt xảy ra ở khoảng iteration 400–600 của session 2 (tức ~90 M samples tích luỹ):
+`Fail_Frac` rơi từ 1.0 xuống 0.22, `Ep_Len_Frac` nhảy từ 0.18 lên 0.79. Trước mốc đó robot ngã ở
+mọi episode; sau mốc đó gần như không ngã nữa. Đừng bỏ cuộc trước mốc này.
+
+### Kiểm chứng bằng video
+
+`policy_final.mp4` (301 frame, 10.03 s): humanoid đứng vững ở **mọi frame**, lặp chu kỳ
+đá–hồi phục–lấy đà 5–6 lần trong 10 giây. Soi kỹ một chu kỳ thấy đủ bốn pha: đá chân duỗi cao với
+thân nghiêng ngược lấy momen → tiếp đất gối khuỵu hấp thụ → về tư thế đứng trung tính ổn định →
+khuỵu gối lấy đà cho cú tiếp theo. Thân có xoay yaw thật giữa các cú.
+
+Khác biệt còn lại so với clip gốc, nhất quán với việc `Sds_Loss_Mean` dừng ở 0.186 chứ không về 0:
+
+- Clip gốc giữ tay guard sát đầu; policy hay dang tay ngang để giữ thăng bằng — chiến lược do vật lý
+  ép ra, không có trong data.
+- Cú đá của policy thấp hơn, ít duỗi hết chân, thân nghiêng nông hơn.
+- Clip gốc dài 1.3 s một cú; policy lặp tuần hoàn vô hạn. **Đây là đúng bản chất SMP**, không phải
+  lỗi: SMP không tracking theo phase, nó chỉ ép phân phối chuyển động khớp với prior.
+
+Đây là mức "đạt" hợp lý cho một clip đơn. Đừng kỳ vọng trùng khít từng frame.
+
+---
+
+## 2. Pipeline bốn giai đoạn
+
+```
+clip motion (.pkl)  ──►  [1] train prior TinyMDM  ──►  smp_prior_<name>.pt
+                                                              │
+                                                              ▼
+                         [2] train policy PPO + SMP reward  ──►  model.pt
+                                                              │
+                                                              ▼
+                         [3] rollout + render  ──►  policy_final.mp4
+                                                              │
+                                                              ▼
+                         [4] đọc metric + xem video  ──►  đạt / train tiếp
+```
+
+**[1] Prior** — `tools/diffusion_model/train_tinymdm.py --cfg_path <cfg> --out_dir <dir>`.
+Mô hình khuếch tán DiT nhỏ (2 layer, 4 head) học phân phối các đoạn chuyển động 10 bước từ clip.
+50 000 iteration, **chạy một GPU duy nhất** — script là vòng lặp một tiến trình, không có
+`torch.distributed`, nên GPU thứ hai nằm không ở giai đoạn này.
+
+**[2] Policy** — `mimickit/run.py`. Reward = `exp(-sds_loss_norm × sds_loss_scale)`, tức
+"đoạn chuyển động vừa sinh ra có giống thứ prior đã học không". Không có task reward
+(`task_reward_weight: 0.0`). Đây là giai đoạn đắt nhất, và là chỗ dùng được nhiều GPU qua `--devices`.
+
+**[3] Video** — `kaggle/make_videos.py`, gọi lần lượt `tools/play_policy_to_mp4.py` (roll out policy
+trong sim, ghi lại state) rồi `tools/render_robot_video.py` (MuJoCo EGL + ffmpeg). Tách rời khỏi
+simulator nên không phụ thuộc GL stack lúc train.
+
+**[4] Đánh giá** — mục 5 và 7 bên dưới.
+
+---
+
+## 3. Đổi gì khi sang robot khác hoặc motion khác
+
+Đây là phần cốt lõi. Bảng dưới liệt kê **mọi** chỗ phải sửa, lấy cặp humanoid/spinkick và
+M3.1/zombie làm ví dụ đối chiếu.
+
+| File | Khoá | Humanoid | VR M3.1 |
+|---|---|---|---|
+| `data/envs/smp_<robot>_env.yaml` | `char_file` | `humanoid/humanoid.xml` | `vr_m3_1/vr_m3_1.xml` |
+| | `motion_file` | `humanoid_spinkick.pkl` | `vr_m3_1_long_zombie_fixed.pkl` |
+| | `init_pose` | 34 số (28 dof) | **33 số (27 dof)** |
+| | `key_bodies` | `head, *_hand, *_foot` | `head_pitch_link, *_wrist_pitch_link, *_ankle_roll_link` |
+| | `contact_bodies` | `right_foot, left_foot` | `*_ankle_roll_link` |
+| `tools/diffusion_model/config/tinymdm_<robot>.yaml` | `env_config` | trỏ về env ở trên | trỏ về env ở trên |
+| | `motion_file` | **phải trùng** env | **phải trùng** env |
+| `data/agents/smp_<robot>_agent.yaml` | `smp_prior_cfg` | file tinymdm ở trên | file tinymdm ở trên |
+| | `smp_prior_model` | `.pt` do bước [1] sinh | `.pt` do bước [1] sinh |
+| `args/smp_<robot>_args.txt` | `--env_config` / `--agent_config` | hai file trên | hai file trên |
+
+### Bốn cái bẫy khi đổi robot
+
+**`init_pose` sai độ dài = mọi khớp lệch, không có lỗi báo.** Định dạng là
+`[root_pos(3), root_rot_expmap(3), dof_pos(N)]`. Humanoid 28 dof → 34 số; M3.1 27 dof → 33 số. Copy
+file humanoid sang rồi chỉ sửa vài số là hỏng âm thầm. **Đếm trước khi sửa.**
+
+**Chiều cao root trong `init_pose` phải đo, không đoán.** M3.1 dùng 0.854 m — vị trí mà đỉnh
+va chạm thấp nhất chạm z = 0 khi chân duỗi thẳng. Đặt thấp quá thì robot xuyên sàn ngay frame đầu,
+cao quá thì rơi tự do vào đầu episode.
+
+**`contact_bodies` đọc ngược với trực giác.** Đây là danh sách các body **được phép** chạm đất.
+`deepmimic_env.py:744-749` xoá lực tiếp xúc của những body trong danh sách rồi kết thúc episode nếu
+*bất kỳ thứ gì khác* đang chạm:
+
+```python
+masked_contact_buf[:, contact_body_ids, :] = 0
+has_fallen = torch.any(torch.abs(masked_contact_buf) > 0.1, dim=-1)
+```
+
+Danh sách rỗng ⇒ không gì được chạm đất ⇒ mọi episode chết ở frame một. Nới theo motion, đừng thu
+hẹp: cartwheel / vault → thêm cổ tay; crawl / roll / getup → thêm thân và cẳng tay.
+
+**Kiểm tra clip gốc có tự vi phạm `contact_bodies` không.** Với M3.1/zombie đã kiểm: qua toàn bộ
+1098 frame, body gần sàn nhất ngoài bàn chân là đầu gối ở +5.3 cm. Nếu chính clip tham chiếu chạm
+sàn bằng body không nằm trong danh sách thì policy không bao giờ học được — nó bị phạt vì bắt chước
+đúng.
+
+---
+
+## 4. Sáu assert phải qua trước khi train chạy
+
+`SMPAgent._check_prior_env_config()` (`mimickit/learning/smp_agent.py:85`) đối chiếu env của prior
+với env của RL và **assert ngay lúc khởi động**. Sai một cái là dừng, may mắn là dừng sớm chứ không
+train sáu tiếng rồi mới biết:
+
+| Khoá | Yêu cầu |
+|---|---|
+| `global_obs` | prior == env |
+| `root_height_obs` | prior == env |
+| `enable_tar_obs` | prior == env (phải `False` cho SMP thuần) |
+| `num_disc_obs_steps` | prior == env |
+| `disc_dof_vel_obs` | prior == env |
+| `key_bodies` | **số lượng** phải bằng nhau |
+| `control_freq` | prior config == `1 / engine.timestep` |
+
+Cách an toàn: prior config trỏ thẳng `env_config:` vào đúng file env mà RL sẽ dùng. Lúc đó năm khoá
+đầu tự khớp, chỉ còn `control_freq` phải tự đặt bằng `control_freq` trong
+`data/engines/newton_engine.yaml` (hiện là 30).
+
+Một assert **không** được kiểm: số dof. Prior học trên 28 dof của humanoid không thể điều khiển robot
+27 dof, và không có gì chặn bạn trỏ nhầm.
+
+---
+
+## 5. Đọc metric: cái nào tin được, cái nào không
+
+### Bỏ qua hoàn toàn
+
+**`Train_Return` và `Test_Return` luôn bằng 0.** Không phải lỗi. Env `amp`/`smp` không bao giờ ghi
+vào `_reward_buf` (`amp_env.py:280`, `_update_reward()` rỗng); reward SMP được tiêm vào experience
+buffer *sau* rollout, ở `smp_agent.py:174`. Return tracker chỉ nhìn env reward, nên nó thấy 0.
+
+**`Smp_Reward_Mean` giảm dần không có nghĩa là tệ đi.** Ở run vừa rồi reward đi từ 0.25 xuống 0.094
+trong khi policy tốt lên rõ rệt. Lý do: `DiffNormalizer` chia SDS loss cho trung bình trị tuyệt đối
+tích luỹ của chính nó, và `sds_normalizer_samples` không được set trong agent yaml nên mặc định là
+`np.inf` (`smp_agent.py:28`) — normalizer cập nhật mãi mãi. Mẫu số giảm theo tử số:
+
+| | đầu run | cuối run |
+|---|---|---|
+| `Sds_Loss_Mean` (thô) | 0.58 | 0.186 |
+| `Sds_Norm_Scale` (mẫu số) | 1.33 | 0.426 |
+| `Sds_Loss_Norm_Mean` (tỉ số) | 0.432 | 0.435 |
+| `Smp_Reward_Mean` | 0.252 | 0.094 |
+
+Reward là đại lượng **tương đối theo thời gian thực**, không so sánh được giữa các iteration.
+Muốn nó có nghĩa thì thêm `sds_normalizer_samples: 50000000` vào agent yaml — scale đóng băng sau
+50 M samples và từ đó reward trở thành thước đo tuyệt đối.
+
+### Tin được
+
+| Metric | Nghĩa | Đích |
+|---|---|---|
+| `Sds_Loss_Mean` | Khoảng cách thô tới prior. **Thước đo tiến bộ chính.** | giảm đơn điệu rồi phẳng |
+| `Ep_Len_Frac` | Độ dài episode / trần. Đo trực tiếp "có trụ được không". | > 0.9 |
+| `Timeout_Frac` | Tỉ lệ episode kết thúc do hết giờ thay vì ngã. | > 0.9 |
+| `Fail_Frac` | Tỉ lệ ngã. Nhiễu khi số termination mỗi iter nhỏ. | gần 0 |
+| `Test_Episode_Length` | Chạy ở chế độ deterministic. | = trần (300) |
+| `Critic_Loss` | Value function có fit nổi không. | giảm về < 0.2 |
+| `Clip_Frac` | Bước cập nhật có quá lớn không. | 0.1 – 0.25 |
+
+`Ep_Len_Frac`, `Fail_Frac`, `Timeout_Frac`, `Terminations` là các metric được thêm vào
+`base_agent._calc_termination_info()` sau session 1, chính vì session 1 không có cách nào phân biệt
+"episode ngắn do ngã" với "episode ngắn do hết giờ".
+
+### Mốc dừng
+
+Train tiếp khi `Sds_Loss_Mean` còn giảm rõ. Dừng khi nó phẳng: 1 500 iteration cuối của session 2
+chỉ đổi được 0.188 → 0.186, tức ~100 M samples cho 1 % cải thiện. Lúc đó nếu chất lượng vẫn chưa đạt
+thì vấn đề nằm ở prior, ở reward scale, hoặc ở chính clip — không phải ở số lượng sample.
+
+---
+
+## 6. Ngân sách
+
+| Giai đoạn | Chi phí đo được |
+|---|---|
+| Prior TinyMDM, 50 k iter | 1 GPU, vài chục phút cho clip đơn |
+| Policy tới khi hết ngã | ~90 M samples |
+| Policy tới khi hội tụ | ~410 M samples ≈ 9 h trên 2× T4 |
+| Rollout + render 3 video | ~2–3 phút |
+
+Throughput thực đo: **13 058 samples/s** với `--num_envs 1024 --devices cuda:0 cuda:1`
+(1024 là **mỗi GPU**, tổng 2048 env). Kaggle giới hạn 9 h interactive / 12 h batch, nên một lần
+hội tụ vừa khít một session — hoặc chia hai session và nối bằng `--model_file`.
+
+Nối session: upload `model.pt` lên WandB Artifact ở cuối session, session sau kéo về bằng
+`kaggle/wandb_upload.py --download <artifact>:latest --dest <dir>` rồi
+`--model_file <dir>/model.pt`. Đặt `WANDB_NAME` khác nhau cho mỗi session để dễ đối chiếu.
+
+---
+
+## 7. Verify bằng video
+
+`kaggle/make_videos.py` sinh ba file. **Chỉ hai trong ba là dùng được:**
+
+| File | Dùng được | Là gì |
+|---|---|---|
+| `reference_data.mp4` | ✅ | Clip gốc từ data. Ground truth. |
+| `policy_final.mp4` | ✅ | Policy chạy trong physics sim. Cái cần đánh giá. |
+| `reference_sim_final.mp4` | ❌ **hỏng** | Đứng yên một tư thế suốt cả clip. |
+
+`reference_sim_final.mp4` hỏng vì `amp_env.py:186`:
+
+```python
+def _update_ref_motion(self):
+    if (self._enable_ref_char()):
+        super()._update_ref_motion()
+```
+
+`_enable_ref_char()` = `self._visualize and self._visualize_ref_char` (`deepmimic_env.py:138`), mà
+`play_policy_to_mp4.py` chạy headless nên `visualize=False`. Buffer `_ref_root_pos` / `_ref_dof_pos`
+không bao giờ được cập nhật sau reset, script đọc đúng các buffer đó và ghi ra một pose lặp 301 lần.
+**Đừng dùng file này để so sánh và đừng upload nó.** Sửa được bằng cách cho
+`play_policy_to_mp4.py` tự lấy frame từ `env._motion_lib.calc_motion_frame()` theo thời gian
+episode, thay vì đọc buffer bị gate.
+
+### Dấu hiệu đó là vật lý thật, không phải playback
+
+`policy_final.mp4` là đầu ra của simulator (MuJoCo-Warp, 240 Hz vật lý / 30 Hz điều khiển, 8 bước
+tích phân mỗi action, torque chặn bởi `actuatorfrcrange`, ma sát Coulomb μ = 1.0). Nhìn vào video,
+những thứ sau chỉ có ở chuyển động do vật lý sinh ra:
+
+- Có pha bay, thân theo quỹ đạo parabol, không lơ lửng giữa chừng.
+- Tay vung phản pha với thân khi xoay (bảo toàn momen động lượng).
+- Tiếp đất có hấp thụ: gối khuỵu rồi mới đứng thẳng.
+- Có run và trôi, tư thế không lặp lại y hệt.
+
+Ngược lại `reference_data.mp4` là kinematic thuần — nó có thể xuyên đất và xoay không cần momen.
+Nếu `policy_final.mp4` cũng làm được mấy chuyện đó thì mới là có vấn đề.
+
+---
+
+## 8. Cạm bẫy hạ tầng đã trả giá
+
+Mỗi dòng dưới đây là một lần chạy hỏng trên Kaggle.
+
+**File chưa commit thì bản clone không có.** `tools/render_robot_video.py` và
+`tools/play_policy_to_mp4.py` từng nằm untracked, nên `make_videos.py` chết với
+`Errno 2: No such file or directory` — sau khi đã train xong 7 tiếng. Trước mỗi lần chạy Kaggle:
+`git status --short --untracked-files=all` và kiểm xem thứ mình sắp dùng có trong `git ls-files` không.
+
+**Clone lại thì phải chạy lại `prepare_data.py`.** Script tạo symlink *bên trong* `data/` của repo,
+nên xoá repo là mất theo. Triệu chứng: `FileNotFoundError` ở một motion file, xuất hiện muộn hơn
+nhiều so với nguyên nhân.
+
+**Kaggle không đảm bảo loại GPU.** Notebook cấp P100 (sm_60) thì PyTorch trong image không có kernel
+tương thích (`no kernel image is available for execution on the device`) vì nó chỉ build cho sm_70+.
+Chọn **T4 x2** (sm_75). Kiểm ngay ở cell đầu, đừng để chết ở cell rollout.
+
+**Quay video trong lúc train với nhiều GPU từng làm crash.** `Logger._mp_aggregate` all-reduce mọi
+log entry dưới dạng float64, và object `Video` không phải số. Đã sửa bằng cách lọc theo
+`isinstance(..., numbers.Number)`, nhưng đường an toàn vẫn là `--video false` khi train rồi render
+offline sau.
+
+**`warp-lang` ghim ở 1.15.0.** Bản 1.16.0 làm hỏng kernel `J_kj` của mujoco-warp.
+
+**IPython `!` magic phải chiếm trọn một dòng.** `os.chdir(x); !git pull` là `SyntaxError`.
+
+---
+
+## 9. Checklist trước khi bấm train
+
+1. `git status --short --untracked-files=all` — mọi file sắp dùng đã được commit chưa?
+2. Accelerator là T4 x2 chưa? (`nvidia-smi` ở cell đầu)
+3. Số dof trong `init_pose` có khớp robot không? Đếm, đừng đoán.
+4. Chiều cao root có phải đo từ MJCF không?
+5. `contact_bodies` có phù hợp với motion không? Clip gốc có tự vi phạm nó không?
+6. `motion_file` trong env config và trong prior config có **trùng nhau** không?
+7. `smp_prior_model` có trỏ đúng file `.pt` mà bước [1] vừa sinh không?
+8. Smoke test 2 phút (`--max_samples 200000`) trước khi chạy full.
+9. `WANDB_NAME` đã đặt riêng cho session này chưa?
+
+---
+
+## 10. Trạng thái hiện tại cho VR M3.1
+
+Các file cấu hình cho M3.1 **đã có sẵn trong working tree** và đã được viết đúng theo những nguyên
+tắc ở mục 3 — 27 dof, root 0.854 m, link name của M3.1, contact bodies là hai bàn chân, đã kiểm
+clip zombie không tự vi phạm:
+
+```
+data/envs/smp_vr_m3_1_env.yaml
+data/agents/smp_vr_m3_1_agent.yaml
+args/smp_vr_m3_1_args.txt
+tools/diffusion_model/config/tinymdm_vr_m3_1.yaml
+```
+
+**Nhưng cả bốn file đều đang untracked.** Chạy Kaggle bây giờ là dính đúng cạm bẫy ở mục 8 — bản
+clone sẽ không có chúng. Commit trước khi làm bất cứ việc gì khác.
+
+Việc còn lại cho M3.1:
+
+1. Commit bốn file trên (và các script trong `tools/` mà chúng phụ thuộc).
+2. Train prior: data pack có sẵn `smp_prior_spinkick.pt` nhưng nó gắn với skeleton humanoid 28 dof,
+   **không tái sử dụng được** cho robot 27 dof. Phải tự chạy `train_tinymdm.py` với
+   `tinymdm_vr_m3_1.yaml`, rồi trỏ `smp_prior_model` trong agent yaml vào file `.pt` sinh ra.
+3. Train policy theo đúng ngân sách ở mục 6, dự kiến ~400 M samples.
+4. Render và đánh giá theo mục 7.
+
+Khác biệt đáng lưu ý so với humanoid: clip zombie dài 1098 frame (~18 s ở 60 fps), trong khi spinkick
+chỉ ~78 frame (~1.3 s). Clip dài gấp 14 lần nghĩa là phân phối chuyển động rộng hơn nhiều, prior khó
+hơn — nhiều khả năng cần hơn 410 M samples. Theo dõi `Sds_Loss_Mean` để quyết định dừng, đừng áp
+cứng con số của humanoid.
