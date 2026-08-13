@@ -149,7 +149,33 @@ gần như chắc chắn là `init_pose` sai chiều cao hoặc `contact_bodies`
 policy dở. Sửa trước khi chạy full.
 
 ```python
-# Cell 8 — train policy (~6h35m)
+# Cell 8a — watchdog: đẩy checkpoint lên WandB mỗi 20 phút
+import subprocess
+wd = subprocess.Popen([
+    "python", "kaggle/checkpoint_watchdog.py",
+    "--model_file", "/kaggle/working/output/smp_m3_spinkick/model.pt",
+    "--project", "mimickit-smp",
+    "--run_name", "smp_m3_spinkick_ckpt",
+    "--interval", "1200",
+])
+print("watchdog pid", wd.pid)
+```
+
+Cell này bảo hiểm cho tình huống hết giờ. `/kaggle/working` chỉ thành Output khi notebook kết thúc
+sạch; một version batch chạy quá 12 h bị đánh dấu failed, và output của version failed thì không nên
+trông cậy. Metric vẫn an toàn vì đã stream lên WandB, nhưng `model.pt` thì không — `run.py` không
+upload gì trong lúc train. Watchdog chạy nền song song với cell train (cell không chờ subprocess đã
+detach) và đẩy checkpoint thành artifact version mới mỗi 20 phút.
+
+Mất session vẫn lấy lại được:
+
+```python
+!python kaggle/wandb_upload.py --project mimickit-smp \
+    --download smp_m3_spinkick_ckpt_model:latest --dest /kaggle/working/recovered
+```
+
+```python
+# Cell 8 — train policy (~9h35m ở tốc độ đo được của M3.1)
 !python mimickit/run.py \
     --arg_file args/smp_vr_m3_1_spinkick_kaggle_args.txt \
     --mode train \
@@ -160,11 +186,22 @@ policy dở. Sửa trước khi chạy full.
     --devices cuda:0 cuda:1
 ```
 
-320 M là con số đo được từ run humanoid, không phải đoán — xem
-[SMP_PLAYBOOK.md §6.1](SMP_PLAYBOOK.md). M3.1 là robot khác nên có thể lệch; theo dõi
-`Sds_Loss_Mean` trên WandB và dừng khi nó phẳng.
+320 M là con số đo được từ run humanoid — xem [SMP_PLAYBOOK.md §6.1](SMP_PLAYBOOK.md).
 
-`model.pt` được ghi đè mỗi 100 iteration (~8 phút), nên session bị cắt cũng không mất gì.
+**Nhưng M3.1 chậm hơn humanoid đáng kể.** Throughput đo thực tế là **9 274 samples/s**, chỉ 71 %
+của humanoid (13 058) — 27 dof, 30 body, mesh STL thật thay vì primitive. Nên 320 M ở đây tốn
+**9 h 35 m** chứ không phải 6 h 35 m, và cả session (prior + setup + train + video) là **~10 h 30 m**.
+
+Hệ quả: chỉ chạy được ở **batch 12 h**, còn dư khoảng 1.5 h. Interactive 9 h thì cell train bị giết
+giữa chừng ở quanh 260–275 M và Cell 9 không bao giờ chạy.
+
+Muốn dư dả hơn thì hạ xuống `--max_samples 260000000` (7 h 47 m). Humanoid ở mốc tương đương đã qua
+điểm hết ngã từ lâu, nên đánh đổi này gần như không mất chất lượng.
+
+```python
+# Cell 8b — tắt watchdog sau khi train xong
+wd.terminate()
+```
 
 ```python
 # Cell 9 — video + upload
