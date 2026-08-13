@@ -315,7 +315,13 @@ os.chdir(REPO)
 ```python
 # Cell 4 — data pack (assets/, motions/, models/)
 !python kaggle/prepare_data.py
+!ls data/motions/humanoid/ | head
 ```
+
+> **Clone lại là phải chạy lại Cell 4.** `prepare_data.py` tạo symlink *bên trong* `data/` của repo,
+> nên `shutil.rmtree(REPO)` ở Cell 2 cuốn theo cả chúng. Bỏ qua bước này thì lỗi rơi xuống tận
+> `make_videos.py`: `FileNotFoundError: data/motions/humanoid/humanoid_spinkick.pkl`. Cell 3 thì
+> ngược lại, pip cài ra ngoài repo nên chạy một lần cho cả session là đủ.
 
 ```python
 # Cell 5 — kéo checkpoint của run cũ về từ WandB Artifact
