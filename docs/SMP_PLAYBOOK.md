@@ -142,6 +142,18 @@ has_fallen = torch.any(torch.abs(masked_contact_buf) > 0.1, dim=-1)
 Danh sách rỗng ⇒ không gì được chạm đất ⇒ mọi episode chết ở frame một. Nới theo motion, đừng thu
 hẹp: cartwheel / vault → thêm cổ tay; crawl / roll / getup → thêm thân và cẳng tay.
 
+**Đo khoảng hở của geom va chạm, không phải của gốc body.** Đây là chỗ M3.1 gần như chắc chắn đã
+hỏng. Kiểm bằng origin của body thì đầu gối M3.1 cách đất +38.8 cm, nghe rất an toàn. Nhưng geom va
+chạm của nó là một capsule chạy dọc ống chân xuống tận cổ chân, và điểm thấp nhất của capsule đó chỉ
+cách đất **+4.1 cm** trong clip — gần bằng chính đế bàn chân (+4.4 cm).
+
+Nghĩa là clip tham chiếu đi sát mép tử vong 4 cm, trên một body **không** nằm trong `contact_bodies`.
+Robot chỉ cần bám quỹ đạo lệch một chút là ống chân quét đất và episode chết ngay. Mà M3.1 võng gối
+24° do gains yếu, nên lệch là chuyện đương nhiên.
+
+Humanoid không có vấn đề này: 15 body, hình khối primitive, chỉ 13 body có thể kết thúc episode.
+M3.1 có 30 body, 21 mang geom va chạm, **19 body có thể kết thúc episode**.
+
 **Kiểm tra clip gốc có tự vi phạm `contact_bodies` không.** Với M3.1/zombie đã kiểm: qua toàn bộ
 1098 frame, body gần sàn nhất ngoài bàn chân là đầu gối ở +5.3 cm. Nếu chính clip tham chiếu chạm
 sàn bằng body không nằm trong danh sách thì policy không bao giờ học được — nó bị phạt vì bắt chước
@@ -328,6 +340,22 @@ Coverage là chỉ số quyết định vì mode collapse để lại dấu vân
 nhưng cặp fidelity/coverage thì có: **tư thế nó tạo ra hoàn toàn hợp lệ trong khi phần lớn động tác
 không bao giờ được ghé qua**. Một policy đứng yên đạt fidelity hoàn hảo. Đo trên rollout tổng hợp:
 policy trung thực cho coverage 0.05, policy giữ-một-tư-thế cho 0.91.
+
+**Đã thử và thất bại: hiệu chuẩn `Sds_Loss` theo sàn của chính clip.** Ý tưởng là đo sai số SDS của
+clip gốc dưới prior của nó (`tools/sds_calibrate.py`) rồi đọc mọi thứ theo bội số sàn. Phép đo đúng,
+kết luận sai:
+
+| | sàn | hội tụ | bội số | video |
+|---|---|---|---|---|
+| Humanoid | 0.0054 | 0.186 | **34.4×** | tốt |
+| M3.1 | 0.0079 | 0.1696 | **21.5×** | vô dụng |
+
+Run thành công nằm **xa sàn hơn** run thất bại. Không có phép biến đổi nào của `Sds_Loss` — thô,
+chuẩn hoá, hay theo bội số sàn — tách được hai run này. Đừng tìm ở đó nữa.
+
+`sds_calibrate.py` vẫn hữu ích cho hai việc khác: theo dõi tiến triển **trong nội bộ một run**, và
+phát hiện ghép nhầm prior với clip (clip giãn chấm dưới prior chưa giãn cho 12×, clip gốc dưới prior
+giãn cho 41× — lệch cặp là thấy ngay).
 
 Dấu hiệu trên đường cong đáng ngờ nhất: **`Sds_Loss` rơi mạnh cùng lúc `Ep_Len_Frac` tăng mạnh.**
 Đó là lúc render kiểm, không phải lúc ăn mừng. Ở run M3.1 điều này xảy ra tại 275 M và tôi đã đọc

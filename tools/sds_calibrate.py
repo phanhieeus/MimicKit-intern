@@ -31,6 +31,19 @@ the same path amp_env._compute_disc_obs_demo uses to feed the discriminator.
 Read the ratio, not the absolute. "The policy sits at 3.2x the clip's own floor"
 is a sentence that survives a change of robot, clip or prior. "Sds_Loss is 0.17"
 is not.
+
+WHAT THIS CANNOT TELL YOU, measured rather than assumed:
+
+    humanoid   floor 0.0054, converged 0.186    = 34.4x   video good
+    M3.1       floor 0.0079, converged 0.1696   = 21.5x   video useless
+
+The successful run sits *further* from its floor than the failed one. Distance
+from the floor does not predict success, and the first version of this file
+claimed it did. Use the ratio to read one run's progress against itself and to
+sanity-check that a prior and clip belong together -- the retimed clip scores
+12x under the unretimed prior, which is how you catch a mismatched pair. Do not
+use it as a success criterion. Nothing derived from Sds_Loss separated these two
+runs; only scoring the rollout did (tools/motion_quality.py).
 """
 
 import argparse
