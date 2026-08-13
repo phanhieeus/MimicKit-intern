@@ -278,6 +278,77 @@ mục [Đọc metric](#đọc-metric-trainreturn--0-là-bình-thường) bên d�
 
 ---
 
+## Notebook riêng chỉ để render video (session train đã đóng)
+
+Khi session train kết thúc, `/kaggle/working` mất sạch — checkpoint chỉ còn trong WandB Artifact.
+Muốn render video cho một run cũ thì mở **notebook mới, bật GPU** (1 GPU là đủ, rollout không cần 2),
+rồi chạy đúng 6 cell dưới. Không có cách nào rút ngắn hơn: `play_policy_to_mp4.py` phải dựng lại
+đúng cái env đã train, nên vẫn cần repo + dependencies + data pack. Tổng khoảng 10–15 phút, phần lớn
+là `setup.sh`.
+
+```python
+# Cell 1 — secrets
+import os
+from kaggle_secrets import UserSecretsClient
+sec = UserSecretsClient()
+os.environ["WANDB_API_KEY"] = sec.get_secret("WANDB_API_KEY")
+os.environ["GITHUB_TOKEN"]  = sec.get_secret("GITHUB_TOKEN")
+os.environ["WANDB_PROJECT"] = "mimickit-smp"
+```
+
+```python
+# Cell 2 — clone
+import os, shutil
+REPO = "/kaggle/working/MimicKit-intern"
+token = os.environ["GITHUB_TOKEN"]
+shutil.rmtree(REPO, ignore_errors=True)
+!git clone --depth 1 https://{token}@github.com/phanhieeus/MimicKit-intern.git {REPO}
+os.chdir(REPO)
+!git log --oneline -1
+```
+
+```python
+# Cell 3 — dependencies (~4 phút)
+!bash kaggle/setup.sh
+```
+
+```python
+# Cell 4 — data pack (assets/, motions/, models/)
+!python kaggle/prepare_data.py
+```
+
+```python
+# Cell 5 — kéo checkpoint của run cũ về từ WandB Artifact
+OUT = "/kaggle/working/output/smp_spinkick"
+!mkdir -p {OUT}
+!python kaggle/wandb_upload.py \
+    --project mimickit-smp \
+    --download smp_spinkick_s2_files:latest \
+    --dest {OUT}
+!ls -lh {OUT}
+```
+
+```python
+# Cell 6 — render + đẩy lên chính run đã train
+RUN_ID = "m6rv7ht3"      # id lấy từ URL của run training
+
+!python kaggle/make_videos.py \
+    --out_dir      {OUT} \
+    --motion_file  data/motions/humanoid/humanoid_spinkick.pkl \
+    --wandb_project mimickit-smp \
+    --wandb_run_id {RUN_ID} \
+    --steps 300
+```
+
+Cell 5 đổ thẳng `model.pt` vào `OUT`, đúng chỗ `make_videos.py` tìm mặc định, nên Cell 6 không cần
+`--model_file`. Sau đó dùng lại đoạn `show()` ở Cell 8 để xem ngay trong notebook.
+
+Nếu Cell 6 báo lỗi ở stage rollout: thêm `--device cuda:0` (mặc định đã vậy) và kiểm tra accelerator
+đã bật. Lỗi ở stage render thì đổi `--gl osmesa`. Muốn tách bạch để soi: chạy `--no_upload` trước cho
+ra file, rồi mới upload bằng `kaggle/wandb_upload.py --run_id {RUN_ID} --files {OUT}/*.mp4`.
+
+---
+
 ## Cell 9 — Đẩy checkpoint + log lên WandB
 
 Video đã lên ở Cell 8 rồi. Cell này để giữ những thứ còn lại — quan trọng nhất là `model.pt`, vì
