@@ -203,6 +203,18 @@ def main():
                                         "cfg_path": args.cfg_path})
     artifact.add_file(model_file)
     artifact.add_file(args.cfg_path)
+
+    # train_tinymdm.py writes samples/ -- motions the prior generates itself,
+    # plus gifs of them. They are the only way to tell a bad prior from a bad
+    # policy, and they cost 50 KB. Keeping them out of the artifact once meant
+    # having to dig them back out of a Kaggle kernel's output to answer
+    # "did the prior learn the motion, or did the policy give up on it?".
+    samples_dir = os.path.join(args.out_dir, "samples")
+    if os.path.isdir(samples_dir):
+        artifact.add_dir(samples_dir, name="samples")
+        print("[prior_cache] attached {} sample file(s)".format(
+            len(os.listdir(samples_dir))))
+
     run.log_artifact(artifact)
     run.finish()
     print("[prior_cache] published {}".format(ref))
