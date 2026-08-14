@@ -115,15 +115,63 @@ def _char(char_file):
     return _CHAR[char_file]
 
 
-def foot_heights(char_file, frames):
+def foot_heights(char_file, frames, soles=False):
+    """Lowest foot height per frame.
+
+    With soles=False this is the ankle body origin, which is all the orientation
+    search needs. With soles=True it is the lowest point of the foot's collision
+    geometry, which is the only thing that can be aligned to the floor: the sole
+    hangs about 6 cm below the ankle origin, so aligning origins buries the foot.
+    """
     import torch
     import util.torch_util as torch_util
 
     char, feet = _char(char_file)
     f = torch.tensor(frames, dtype=torch.float32)
-    body_pos, _ = char.forward_kinematics(
+    body_pos, body_rot = char.forward_kinematics(
         f[:, 0:3], torch_util.exp_map_to_quat(f[:, 3:6]), char.dof_to_rot(f[:, 6:]))
-    return body_pos[:, feet, 2].min(dim=1).values.numpy()
+    if not soles:
+        return body_pos[:, feet, 2].min(dim=1).values.numpy()
+
+    names = char.get_body_names()
+    tree = {b.get("name"): b for b in ET.parse(char_file).iter("body")}
+    lows = np.full(len(frames), np.inf)
+    for i in feet:
+        body = tree.get(names[i])
+        if body is None:
+            continue
+        P = body_pos[:, i, :].numpy()
+        Q = body_rot[:, i, :].numpy()                      # xyzw
+        for g in body.findall("geom"):
+            if "collision" not in (g.get("class") or ""):
+                continue
+            gp = _attr(g, "pos", [0, 0, 0]); gq = _attr(g, "quat", [1, 0, 0, 0])
+            size = _attr(g, "size", [0]); kind = g.get("type", "sphere")
+            for k in range(len(P)):
+                rot = _quat_mat(np.array([Q[k, 3], Q[k, 0], Q[k, 1], Q[k, 2]]))
+                rg = rot @ _quat_mat(gq)
+                c = P[k] + rot @ gp
+                if kind == "capsule":
+                    axis = rg @ np.array([0, 0, 1.0])
+                    z = min((c + size[1] * axis)[2], (c - size[1] * axis)[2]) - size[0]
+                elif kind == "box":
+                    z = c[2] - sum(abs(rg[2, j]) * size[j] for j in range(3))
+                else:
+                    z = c[2] - size[0]
+                lows[k] = min(lows[k], z)
+    return lows
+
+
+def _attr(elem, name, default):
+    raw = elem.get(name)
+    return np.array([float(v) for v in raw.split()]) if raw else np.array(default, float)
+
+
+def _quat_mat(q):
+    w, x, y, z = q / np.linalg.norm(q)
+    return np.array([[1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)],
+                     [2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)],
+                     [2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)]])
 
 
 def score_orientation(char_file, root_pos, root_mats, dof, stride=1):
@@ -151,6 +199,15 @@ def main():
                         help="auto, or e.g. XYZ / ZYX-extrinsic.")
     parser.add_argument("--loop_mode", type=int, default=0, choices=[0, 1],
                         help="0 CLAMP, 1 WRAP. A looping clip wants 1.")
+    parser.add_argument("--limit_fix", default="report",
+                        choices=["report", "shift", "clamp"],
+                        help="What to do with joints outside the MJCF range. 'shift' adds "
+                             "a constant offset so the trajectory slides inside, keeping "
+                             "the shape of the motion and changing only where the limb "
+                             "sits; 'clamp' flattens the overshooting frames instead. "
+                             "Shift is usually right when the range of motion fits and "
+                             "only its centre is off, which is what a differing rest pose "
+                             "looks like.")
     parser.add_argument("--clamp", action="store_true",
                         help="Clip joints to the MJCF range. Off by default so a bad "
                              "retarget is visible rather than quietly squashed; on when "
@@ -253,19 +310,44 @@ def main():
                 j, np.degrees(over), int(((dof[:, i] > hi) | (dof[:, i] < lo)).sum())))
     if not bad:
         print("   every joint stays inside its range")
-    elif args.clamp:
+    elif args.limit_fix == "shift" or args.clamp or args.limit_fix == "clamp":
+        mode = "clamp" if (args.clamp or args.limit_fix == "clamp") else "shift"
         for i, j in enumerate(joints):
-            dof[:, i] = np.clip(dof[:, i], lim[j][0], lim[j][1])
+            lo, hi = lim[j]
+            lo_d, hi_d = dof[:, i].min(), dof[:, i].max()
+            if lo_d >= lo and hi_d <= hi:
+                continue
+            if mode == "shift":
+                span, room = hi_d - lo_d, hi - lo
+                if span <= room:
+                    # The motion fits; only its centre is out. One nudge is enough,
+                    # and the shape of the movement survives untouched.
+                    off = (lo - lo_d) if lo_d < lo else (hi - hi_d)
+                    dof[:, i] += off
+                    print("   %-28s shifted %+5.1f deg" % (j, np.degrees(off)))
+                    continue
+                # Wider than the joint can go: centre it, then clip what is left.
+                off = 0.5 * (lo + hi) - 0.5 * (lo_d + hi_d)
+                dof[:, i] += off
+                before = dof[:, i].copy()
+                dof[:, i] = np.clip(dof[:, i], lo, hi)
+                print("   %-28s shifted %+5.1f deg, still %.1f deg too wide -> clipped "
+                      "%d frame(s)" % (j, np.degrees(off), np.degrees(span - room),
+                                       int((before != dof[:, i]).sum())))
+            else:
+                dof[:, i] = np.clip(dof[:, i], lo, hi)
+                print("   %-28s clamped" % j)
         frames[:, 6:] = dof
-        print("   --clamp: clipped to range, so every target pose is now reachable")
 
-    heights = foot_heights(args.char_file, frames)
+    soles = foot_heights(args.char_file, frames, soles=True)
     if args.ground_offset != "none":
-        offset = -float(np.min(heights)) if args.ground_offset == "auto" else float(args.ground_offset)
+        offset = -float(np.min(soles)) if args.ground_offset == "auto" else float(args.ground_offset)
         frames[:, 2] += offset
-        heights = heights + offset
-        print("\nground: shifted root z by %+.1f cm so the lowest sole sits at 0" % (offset * 100))
-    print("lowest foot %+.1f cm, median %+.1f cm" % (heights.min() * 100, np.median(heights) * 100))
+        soles = soles + offset
+        print("\nground: shifted root z by %+.1f cm so the lowest point of the foot "
+              "collision geometry sits at 0" % (offset * 100))
+    print("sole height: min %+.1f cm, median %+.1f cm, frames below floor: %d" % (
+        soles.min() * 100, np.median(soles) * 100, int((soles < -1e-4).sum())))
 
     if not args.output:
         print("\nNothing written: pass --output.")
