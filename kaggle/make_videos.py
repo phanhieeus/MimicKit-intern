@@ -92,7 +92,11 @@ def make_policy_videos(model_file, tag, args):
                              os.path.join(args.out_dir, "reference_sim_{}.mp4".format(tag)),
                              args.fps, args.gl))
     else:
-        print("[WARN] no reference character recorded for this env")
+        # Expected for headless SMP/AMP runs: play_policy_to_mp4.py declines to
+        # record a reference character the env never moves, so there is nothing to
+        # render and nothing is wrong. reference_data.mp4 already shows the clip.
+        print("[INFO] no reference character recorded; skipping reference_sim_{}.mp4"
+              .format(tag))
     return videos
 
 

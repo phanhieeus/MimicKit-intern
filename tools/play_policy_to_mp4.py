@@ -123,6 +123,19 @@ def main() -> int:
     ref_frames: list[np.ndarray] = []
     n_done = 0
 
+    # Only record the reference character if the env is actually going to move it.
+    # AMPEnv._update_ref_motion (amp_env.py:186) is a no-op unless _enable_ref_char(),
+    # which is `self._visualize and self._visualize_ref_char` -- and this script builds
+    # the env with visualize=False. The buffers therefore keep whatever the last reset
+    # put in them, so recording them yields a clip of one frozen pose, which then costs
+    # a full render to produce a video of a statue. Skip it at the source.
+    record_ref = hasattr(env, "_ref_root_pos")
+    if record_ref and hasattr(env, "_enable_ref_char") and not env._enable_ref_char():
+        print("[INFO] Reference character is not updated in a headless env "
+              "(amp_env.py:186); skipping reference.pkl rather than writing a frozen "
+              "pose. Render the clip itself with render_robot_video.py --motion instead.")
+        record_ref = False
+
     def snapshot() -> None:
         root_pos = engine.get_root_pos(0)[0].detach().cpu().numpy()
         root_rot = engine.get_root_rot(0)[0].detach().cpu().numpy()  # xyzw
@@ -130,8 +143,7 @@ def main() -> int:
         pol_frames.append(
             np.concatenate([root_pos, _quat_to_expmap(root_rot), dof_pos])
         )
-        # The reference character the env tracks against, if this env has one.
-        if hasattr(env, "_ref_root_pos"):
+        if record_ref:
             r_pos = env._ref_root_pos[0].detach().cpu().numpy()
             r_rot = env._ref_root_rot[0].detach().cpu().numpy()
             r_dof = env._ref_dof_pos[0].detach().cpu().numpy()

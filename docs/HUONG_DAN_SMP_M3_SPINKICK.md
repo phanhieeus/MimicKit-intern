@@ -337,9 +337,15 @@ wd.terminate()
             /kaggle/working/output/smp_m3_spinkick_slow2/log.txt
 ```
 
-`--char_file` **phải** là MJCF của M3.1, mặc định của script là humanoid. Chỉ xem
-`policy_final.mp4` và `reference_data.mp4`; `reference_sim_final.mp4` hỏng (đứng yên một tư thế),
-lý do ở [SMP_PLAYBOOK.md §7](SMP_PLAYBOOK.md).
+`--char_file` **phải** là MJCF của M3.1, mặc định của script là humanoid.
+
+Ra hai video: `policy_final.mp4` và `reference_data.mp4`. **`reference_sim_final.mp4` không còn được
+tạo nữa** — `AMPEnv._update_ref_motion` (`amp_env.py:186`) chỉ chạy khi `_visualize`, mà rollout thì
+headless, nên nhân vật tham chiếu đứng im ở tư thế reset. Trước đây ta vẫn ghi rồi render nó, tốn một
+lượt render để ra video một bức tượng. Giờ `play_policy_to_mp4.py` phát hiện và bỏ qua từ gốc; dòng
+`[INFO] no reference character recorded` là bình thường, không phải lỗi.
+
+Muốn xem clip gốc thì đã có `reference_data.mp4`, render thẳng từ file motion.
 
 ---
 
