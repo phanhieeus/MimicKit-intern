@@ -6,11 +6,15 @@ chain, because that chain fails silently in a notebook: if the rollout dies, the
 render has no input, and the upload then skips the missing mp4 with a warning
 nobody reads. Here every stage is checked and a failure stops the script.
 
-Three clips come out of a run, and the comparison between them is the point:
+Two clips come out of a run, and the comparison between them is the point:
 
     reference_data.mp4  the source clip, straight from the motion file
     policy.mp4          what the policy does in the physics sim
-    reference_sim.mp4   the env's reference character over the same episode
+
+A third, reference_sim.mp4, used to be produced and was always a single frozen
+pose: the env only moves its reference character when visualising, and these
+rollouts are headless. play_policy_to_mp4.py now declines to record it, so there
+is nothing here to render -- see the [INFO] line it prints.
 
     export WANDB_API_KEY=...
     python kaggle/make_videos.py \
