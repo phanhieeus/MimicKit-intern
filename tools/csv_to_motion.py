@@ -187,6 +187,63 @@ def score_orientation(char_file, root_pos, root_mats, dof, stride=1):
     return near, float(np.std(h)), frames
 
 
+def _feet_xyz(char_file, frames):
+    """World position of every foot body, per frame: (n_frames, n_feet, 3)."""
+    import torch
+    import util.torch_util as torch_util
+    char, feet = _char(char_file)
+    f = torch.tensor(frames, dtype=torch.float32)
+    body_pos, _ = char.forward_kinematics(
+        f[:, 0:3], torch_util.exp_map_to_quat(f[:, 3:6]), char.dof_to_rot(f[:, 6:]))
+    return body_pos[:, feet, :].numpy()
+
+
+def _axis_rot(axis, angle):
+    axis = np.asarray(axis, float)
+    axis = axis / np.linalg.norm(axis)
+    k = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    return np.eye(3) + np.sin(angle) * k + (1 - np.cos(angle)) * (k @ k)
+
+
+def _log(m):
+    cos = np.clip((np.trace(m) - 1.0) / 2.0, -1.0, 1.0)
+    angle = np.arccos(cos)
+    if angle < 1e-9:
+        return np.zeros(3)
+    v = np.array([m[2, 1] - m[1, 2], m[0, 2] - m[2, 0], m[1, 0] - m[0, 1]])
+    return v * (angle / (2.0 * np.sin(angle)))
+
+
+def solve_chain(axes, target, guess):
+    """Angles about `axes`, composed in order, that reproduce `target`.
+
+    Gauss-Newton on the rotation error, seeded from the pose we already have. The
+    hip is a genuine 3-dof chain so an exact solution exists; the tilted pitch
+    axis is why this cannot be read off as Euler angles.
+    """
+    th = np.array(guess, float)
+
+    def compose(a):
+        m = np.eye(3)
+        for axis, angle in zip(axes, a):
+            m = m @ _axis_rot(axis, angle)
+        return m
+
+    for _ in range(24):
+        err = _log(target.T @ compose(th))
+        if np.linalg.norm(err) < 1e-9:
+            break
+        jac = np.zeros((3, 3))
+        for i in range(3):
+            d = th.copy(); d[i] += 1e-6
+            jac[:, i] = (_log(target.T @ compose(d)) - err) / 1e-6
+        try:
+            th -= np.linalg.solve(jac, err)
+        except np.linalg.LinAlgError:
+            break
+    return th
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -199,6 +256,13 @@ def main():
                         help="auto, or e.g. XYZ / ZYX-extrinsic.")
     parser.add_argument("--loop_mode", type=int, default=0, choices=[0, 1],
                         help="0 CLAMP, 1 WRAP. A looping clip wants 1.")
+    parser.add_argument("--fold_waist", action="store_true",
+                        help="Reproduce waist roll/pitch the robot does not have by tilting "
+                             "the pelvis and counter-rotating both hips. Exact in "
+                             "orientation, and it is how a stiff-waisted robot would do the "
+                             "move for real -- but it hands the work to the hips.")
+    parser.add_argument("--fold_scale", type=float, default=1.0,
+                        help="Fraction of the waist motion to fold in (try 0.5 first).")
     parser.add_argument("--limit_fix", default="report",
                         choices=["report", "shift", "clamp"],
                         help="What to do with joints outside the MJCF range. 'shift' adds "
@@ -261,6 +325,56 @@ def main():
     root_eul = data[:, [col["root_rotateX"], col["root_rotateY"], col["root_rotateZ"]]] * ang_scale
     dof = np.stack([data[:, col[available[j]]] for j in joints], axis=1) * ang_scale
 
+    def apply_fold(mats, dof):
+        """Give the pelvis the lean the waist cannot, and take it back out of the legs.
+
+        C is the waist rotation beyond yaw, expressed in the pelvis frame. Setting
+        root' = root @ C and H' = C.T @ H leaves the torso and both legs in exactly
+        the orientation the source had -- the algebra cancels. What it does not
+        leave alone is the load: holding the trunk out over the hips is now the
+        hips' job, which is also how a stiff-waisted robot would really do it.
+        """
+        dof_before = dof.copy()
+        wy = data[:, col["waist_yaw_joint_dof"]] * ang_scale
+        wr = data[:, col["waist_roll_joint_dof"]] * ang_scale * args.fold_scale
+        wp = data[:, col["waist_pitch_joint_dof"]] * ang_scale * args.fold_scale
+        base = np.percentile(wp, 5)
+        print("\nfolding waist into pelvis + hips (scale %.2f); %.1f deg of pitch treated "
+              "as rest pose and left out" % (args.fold_scale, np.degrees(base)))
+        wp = wp - base
+
+        hip_axes = [(0, 0.965926, -0.258819), (1, 0, 0), (0, 0, 1)]
+        legs = [[joints.index("%s_hip_%s_joint" % (s, k)) for k in ("pitch", "roll", "yaw")]
+                for s in ("left", "right")]
+        out, cmats, mats_in = [], [], mats
+        for k in range(len(mats)):
+            ryaw = _axis_rot((0, 0, 1), wy[k])
+            cmat = ryaw @ _axis_rot((1, 0, 0), wr[k]) @ _axis_rot((0, 1, 0), wp[k]) @ ryaw.T
+            cmats.append(cmat)
+            out.append(mats[k] @ cmat)
+            for idx in legs:
+                cur = [dof[k, i] for i in idx]
+                h = np.eye(3)
+                for axis, angle in zip(hip_axes, cur):
+                    h = h @ _axis_rot(axis, angle)
+                for i, v in zip(idx, solve_chain(hip_axes, cmat.T @ h, cur)):
+                    dof[k, i] = v
+        # The hip is not a ball joint: its three axes sit 0, 6 and 29 cm apart down
+        # the leg. Counter-rotating them reproduces the leg's orientation exactly and
+        # its *position* not at all, so the feet drift by tens of centimetres. Fixing
+        # that properly means full leg IK. Short of it, translate the root by the mean
+        # displacement of both feet -- continuous, unlike anchoring to whichever foot
+        # is lowest, which jumped 44 cm every time the support swapped.
+        pre = _feet_xyz(args.char_file, np.concatenate(
+            [root_pos, mat_to_expmap(mats_in), dof_before], axis=1))
+        post = _feet_xyz(args.char_file, np.concatenate(
+            [root_pos, mat_to_expmap(out), dof], axis=1))
+        shift = (pre - post).mean(axis=1)
+        print("   feet drifted %.1f cm on average; root translated to absorb it "
+              "(residual %.1f cm)" % (np.linalg.norm(pre - post, axis=2).mean() * 100,
+                                      np.abs(shift).max() * 100))
+        return out, dof, root_pos + shift
+
     def mats_for(order, intrinsic, sel=None):
         eul = root_eul if sel is None else root_eul[sel]
         idx = ["XYZ".index(a) for a in order]
@@ -283,8 +397,10 @@ def main():
                 if best is None or near > best[0]:
                     best = (near, std, (order, intrinsic), label)
         near, std, (order, intrinsic), label = best
-        frames = np.concatenate(
-            [root_pos, mat_to_expmap(mats_for(order, intrinsic)), dof], axis=1)
+        mats = mats_for(order, intrinsic)
+        if args.fold_waist:
+            mats, dof, root_pos = apply_fold(mats, dof)
+        frames = np.concatenate([root_pos, mat_to_expmap(mats), dof], axis=1)
         print("   -> %s" % label)
         if near < 0.3:
             print("   WARNING: even the best convention keeps a foot near the floor in only "
@@ -292,6 +408,8 @@ def main():
     else:
         order, _, kind = args.euler_order.partition("-")
         mats = mats_for(order.upper(), kind != "extrinsic")
+        if args.fold_waist:
+            mats, dof, root_pos = apply_fold(mats, dof)
         near, std, frames = score_orientation(args.char_file, root_pos, mats, dof)
         print("\n%s: a foot is near the floor in %.1f%% of frames" % (args.euler_order, 100 * near))
 
