@@ -367,13 +367,22 @@ def scan(args):
     print("%-42s %6s %7s %7s %8s  %s" % (
         "clip", "sec", "flight", "jump", "leg tau", "worst leg joint"))
     for r in rows:
-        flag = "" if r["jump"] <= 0.08 else "  <-- JUMPS"
+        if r["jump"] > 1.0:
+            flag = "  <-- TERRAIN? (no floor contact; ground is flat)"
+        elif r["jump"] > 0.08:
+            flag = "  <-- JUMPS"
+        else:
+            flag = ""
         print("%-42s %6.2f %6.2fs %6.0fcm %7.2fx  %-24s%s" % (
             r["name"], r["seconds"], r["flight"], r["jump"] * 100,
             r["leg"], r["leg_name"].replace("_joint", ""), flag))
 
     ok = [r for r in rows if r["jump"] <= 0.08]
+    terrain = [r for r in rows if r["jump"] > 1.0]
     print("\n%d of %d clips keep a foot down throughout." % (len(ok), len(rows)))
+    if terrain:
+        print("%d never touch the floor at all -- captured on terrain MimicKit does not "
+              "have, not jumps." % len(terrain))
     if ok:
         best = [r for r in ok if r["leg"] <= 1.0]
         print("%d of those also stay inside every leg torque limit as-is." % len(best))
@@ -422,7 +431,16 @@ def main():
         # frames where both feet clear the floor by a few centimetres -- a scuff
         # between steps, or retarget noise. 8 cm is the line between that and a
         # robot actually leaving the ground.
-        if air and air["implied_jump"] > 0.08:
+        if air and air["implied_jump"] > 1.0:
+            print("=== FEET NEVER REACH THE FLOOR: %.2f s, implying a %.0f cm jump ===" % (
+                air["longest_seconds"], air["implied_jump"] * 100))
+            print("    No robot jumps that high. This clip was almost certainly captured on")
+            print("    terrain -- stairs, a platform, a wall -- and MimicKit's ground is flat")
+            print("    (newton_engine.py:1005 adds a plane and nothing else). Training it as-is")
+            print("    means climbing stairs that are not there.")
+            print("    Fix: build the geometry and place it with an env_name: \"static_objects\"")
+            print("    config, the way vault_humanoid_env.yaml does. Retiming is irrelevant.\n")
+        elif air and air["implied_jump"] > 0.08:
             print("=== FLIGHT PHASE: %.2f s (%d of %d frames off the ground) ===" % (
                 air["longest_seconds"], air["frames_airborne"], air["total_frames"]))
             print("    root rises %.0f cm; ballistics need a %.0f cm jump" % (
