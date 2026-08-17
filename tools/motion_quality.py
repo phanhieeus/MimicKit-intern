@@ -41,6 +41,8 @@ captures but two do: the poses the policy produces are individually fine
 """
 
 import argparse
+import json
+import os
 import pickle
 import sys
 
@@ -138,6 +140,11 @@ def main():
                         help="Attach to an existing run instead -- pass the training run's "
                              "id so the scores sit beside its curves.")
     parser.add_argument("--wandb_run_name", default="motion_quality")
+    parser.add_argument("--json_out", default=None,
+                        help="Also write the scores and verdict here as JSON. A curriculum "
+                             "runs several stages in one session and the decision is made by "
+                             "comparing them; scraping that out of the log is worse than "
+                             "writing one file per stage.")
     args = parser.parse_args()
 
     pol, pol_fps = load_clip(args.policy)
@@ -227,6 +234,18 @@ def main():
 
     if args.wandb_project:
         log_to_wandb(scores, problems, args)
+
+    if args.json_out:
+        payload = dict(scores)
+        payload["problems"] = problems
+        payload["policy"] = args.policy
+        payload["reference"] = args.reference
+        out_dir = os.path.dirname(os.path.abspath(args.json_out))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(args.json_out, "w") as handle:
+            json.dump(payload, handle, indent=2)
+        print("wrote {}".format(args.json_out))
 
     if problems:
         print("VERDICT: FAIL")
