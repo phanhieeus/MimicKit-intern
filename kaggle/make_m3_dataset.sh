@@ -30,7 +30,9 @@ OUT_DIR="${REPO_ROOT}/kaggle_dataset_vr_m3_1"
 # (no flight phase, worst leg torque 0.28x) and is the recommended first motion for
 # this robot. spinkick rides along for comparison, but see SMP_PLAYBOOK.md 4.1 --
 # it needs a 27 cm jump and cost a 320M-sample run.
-CLIPS=("vr_m3_1_humanoid_zombie_walk.pkl" "vr_m3_1_dance_what.pkl" "vr_m3_1_humanoid_spinkick.pkl")
+CLIPS=("vr_m3_1_humanoid_zombie_walk.pkl" "vr_m3_1_dance_what.pkl" "vr_m3_1_humanoid_spinkick.pkl"
+       "vr_m3_1_dance_what_1cycle_s4.pkl" "vr_m3_1_dance_what_1cycle_s2.pkl"
+       "vr_m3_1_dance_what_1cycle_s1p4.pkl" "vr_m3_1_dance_what_1cycle_s1.pkl")
 ALL_MOTIONS=0
 
 while [[ $# -gt 0 ]]; do

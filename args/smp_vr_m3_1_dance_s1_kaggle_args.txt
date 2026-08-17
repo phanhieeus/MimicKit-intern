@@ -1,0 +1,12 @@
+--num_envs 1024
+--visualize false
+--video false
+--logger wandb
+
+--engine_config data/engines/newton_engine.yaml
+--env_config data/envs/smp_vr_m3_1_dance_s1_env.yaml
+--agent_config data/agents/smp_vr_m3_1_dance_s1_agent.yaml
+
+--devices cuda:0 cuda:1
+--save_int_models true
+--out_dir /kaggle/working/output/smp_m3_dance_s1
